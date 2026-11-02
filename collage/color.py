@@ -183,8 +183,12 @@ def _srgb_oetf(l):
     return np.where(l <= 0.0031308, l * 12.92, 1.055 * np.power(l, 1 / 2.4) - 0.055)
 
 
+_HLG_ABC = (0.17883277, 0.28466892, 0.55991073)
+_LUM2020 = np.array([0.2627, 0.6780, 0.0593])
+
+
 def _hlg_to_nits(e, prim):
-    a, b, c = 0.17883277, 0.28466892, 0.55991073
+    a, b, c = _HLG_ABC
     e = np.clip(e, 0, 1)
     scene = np.where(e <= 0.5, e * e / 3.0, (np.exp((e - c) / a) + b) / 12.0)
     lw = 1000.0
@@ -205,7 +209,7 @@ def bt2446a(nits_2020, l_hdr: float, l_sdr: float = 100.0):
 
     Input: BT.2020 display light in cd/m². Output: BT.2020 linear light where 1.0 is SDR
     reference white (BT.1886 gamma 2.4 decoded)."""
-    lum = np.array([0.2627, 0.6780, 0.0593])
+    lum = _LUM2020
     p = np.power(np.clip(nits_2020 / l_hdr, 0, 1), 1 / 2.4)
     y = p @ lum
     rho_h = 1 + 32 * (l_hdr / 10000) ** (1 / 2.4)
@@ -269,12 +273,11 @@ def build_cube(primaries: str, transfer: str, target: str, size: int = 33, peak:
 # ---------------------------------------------------------------- HLG output
 
 SDR_WHITE_NITS = 203.0  # BT.2408 reference white for SDR content placed in HDR
-HLG_PEAK = 1000.0
-_LUM2020 = np.array([0.2627, 0.6780, 0.0593])
+HLG_PEAK = HLG_NOMINAL_PEAK
 
 
 def hlg_oetf(e):
-    a, b, c = 0.17883277, 0.28466892, 0.55991073
+    a, b, c = _HLG_ABC
     e = np.clip(e, 0, 1)
     return np.where(e <= 1 / 12, np.sqrt(3 * e), a * np.log(np.maximum(12 * e - b, 1e-12)) + c)
 
@@ -296,7 +299,8 @@ def nits_to_hlg(nits_2020):
     return hlg_oetf(np.clip(fd * scale[..., None], 0, 1))
 
 
-def build_cube_hlg(primaries: str, transfer: str, size: int, peak: float | None = None) -> str:
+def build_cube_hlg(primaries: str, transfer: str, size: int) -> str:
+    """Source -> HLG BT.2020. PQ highlights above 750 nits are soft-clipped toward HLG's 1000-nit peak."""
     g = np.linspace(0, 1, size)
     b, gg, r = np.meshgrid(g, g, g, indexing="ij")
     e = np.stack([r, gg, b], axis=-1).reshape(-1, 3)
@@ -323,12 +327,12 @@ def p3_to_hlg16(rgb8: np.ndarray, log2_boost: np.ndarray | None) -> np.ndarray:
 
 def lut_path(cache_dir: Path, primaries: str, transfer: str, target: str, peak: float | None = None) -> Path:
     cache_dir.mkdir(parents=True, exist_ok=True)
-    pk = "" if transfer == "sdr" else f"_{int(hdr_peak(transfer, peak))}"
+    pk = "" if transfer == "sdr" or target == "hlg" else f"_{int(hdr_peak(transfer, peak))}"
     p = cache_dir / f"lut2_{primaries}_{transfer}{pk}_{target}.cube"
     if not p.exists():
         size = 33 if transfer == "sdr" else 65
         if target == "hlg":
-            p.write_text(build_cube_hlg(primaries, transfer, size, peak))
+            p.write_text(build_cube_hlg(primaries, transfer, size))
         else:
             p.write_text(build_cube(primaries, transfer, target, size, peak))
     return p

@@ -147,6 +147,27 @@ def _peak_luminance(path: Path, stream: dict) -> float | None:
         return None
 
 
+def _scan_duration(path: Path) -> float:
+    """Duration for containers that don't report one: last packet end time, else packets / frame rate."""
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries",
+                          "stream=nb_read_packets,avg_frame_rate,r_frame_rate:packet=pts_time,duration_time",
+                          "-of", "json", str(path)], capture_output=True, text=True).stdout
+    info = json.loads(out or "{}")
+    end = 0.0
+    for pk in info.get("packets", []):
+        try:
+            end = max(end, float(pk["pts_time"]) + float(pk.get("duration_time") or 0))
+        except (KeyError, ValueError):
+            continue
+    st = (info.get("streams") or [{}])[0]
+    try:
+        fps = float(Fraction(st.get("avg_frame_rate") or "0/1")) or float(Fraction(st.get("r_frame_rate") or "0/1"))
+        by_count = int(st.get("nb_read_packets") or 0) / fps if fps else 0.0
+    except (ValueError, ZeroDivisionError):
+        by_count = 0.0
+    return max(end, by_count)
+
+
 def probe_video(path: Path) -> dict:
     info = ffprobe(path)
     v = next((s for s in info["streams"] if s.get("codec_type") == "video"), None)
@@ -162,7 +183,7 @@ def probe_video(path: Path) -> dict:
     rot = _rotation(v)
     if abs(rot) % 180 == 90:
         w, h = h, w
-    duration = float(v.get("duration") or info["format"].get("duration") or 0)
+    duration = float(v.get("duration") or info["format"].get("duration") or 0) or _scan_duration(path)
     try:
         fps = float(Fraction(v.get("avg_frame_rate") or "30/1"))
     except (ZeroDivisionError, ValueError):
@@ -279,11 +300,17 @@ def delete(media_id: str):
     shutil.rmtree(media_dir(media_id), ignore_errors=True)
 
 
+def has_gainmap(meta: dict) -> bool:
+    """Only trust gain maps that were extracted (older imports may carry the flag without the file)."""
+    return bool(meta.get("gainmap") and meta.get("headroom")
+                and (media_dir(meta["id"]) / "gainmap.png").exists())
+
+
 def public(meta: dict) -> dict:
     base = f"/m/{meta['id']}"
     out = {k: meta[k] for k in ("id", "kind", "name", "ext", "width", "height", "aspect")}
     out.update(space=meta.get("space"), wide=meta.get("wide", False),
-               gainmap=meta.get("gainmap", False), headroom=meta.get("headroom"),
+               gainmap=has_gainmap(meta), headroom=meta.get("headroom") if has_gainmap(meta) else None,
                preview=f"{base}/preview.jpg", thumb=f"{base}/thumb.jpg")
     if meta["kind"] == "video":
         out.update(duration=meta["duration"], hasAudio=meta["hasAudio"], fps=meta["fps"],

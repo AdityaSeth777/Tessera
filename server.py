@@ -16,6 +16,18 @@ ROOT = Path(__file__).resolve().parent
 app = Flask(__name__, static_folder=str(ROOT / "static"), static_url_path="/static")
 
 jobs: dict[str, dict] = {}
+PORT = int(os.environ.get("PORT", 5173))
+ALLOWED_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
+
+
+@app.before_request
+def local_only():
+    # Block DNS rebinding (foreign Host) and cross-site writes (foreign Origin) from other web pages.
+    if request.host not in ALLOWED_HOSTS:
+        abort(403)
+    origin = request.headers.get("Origin")
+    if request.method not in ("GET", "HEAD") and origin and origin.split("://", 1)[-1] not in ALLOWED_HOSTS:
+        abort(403)
 
 
 @app.get("/")
@@ -69,7 +81,9 @@ def media_file(mid, name):
 
 @app.post("/api/export")
 def start_export():
-    body = request.get_json(force=True)
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        abort(415)
     fmt = body["format"]
     if fmt not in render.STILL_FORMATS and fmt not in render.VIDEO_FORMATS:
         abort(400, "unknown format")
@@ -122,9 +136,8 @@ def export_file(name):
 
 if __name__ == "__main__":
     media.load_index()
-    port = int(os.environ.get("PORT", 5173))
-    url = f"http://127.0.0.1:{port}"
+    url = f"http://127.0.0.1:{PORT}"
     print(f"\n  Collage running at {url}\n  Exports are saved to {render.EXPORT_DIR}\n")
     if not os.environ.get("NO_BROWSER"):
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    app.run(host="127.0.0.1", port=port, threaded=True, debug=False)
+    app.run(host="127.0.0.1", port=PORT, threaded=True, debug=False)

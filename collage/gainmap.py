@@ -16,17 +16,14 @@ import numpy as np
 import pillow_heif
 from PIL import Image, ImageOps
 
+from . import color
+
 APPLE_AUX = "urn:com:apple:photo:2020:aux:hdrgainmap"
 DEFAULT_HEADROOM = 4.0
 
 
-def srgb_eotf(e):
-    return np.where(e <= 0.04045, e / 12.92, ((e + 0.055) / 1.055) ** 2.4)
-
-
-def srgb_oetf(l):
-    l = np.clip(l, 0, 1)
-    return np.where(l <= 0.0031308, l * 12.92, 1.055 * np.power(l, 1 / 2.4) - 0.055)
+srgb_eotf = color._srgb_eotf
+srgb_oetf = color._srgb_oetf
 
 
 # ------------------------------------------------------------------ reading
@@ -112,7 +109,16 @@ def _best_orientation(gain: Image.Image, base: Image.Image) -> Image.Image | Non
 
 
 def read_apple_gainmap(path: Path) -> tuple[Image.Image, float] | None:
-    """Returns (gain map as 'L', aligned to the EXIF-transposed photo, headroom) or None."""
+    """Returns (gain map as 'L', aligned to the EXIF-transposed photo, headroom) or None.
+
+    Any failure means "no HDR": the photo still imports as SDR."""
+    try:
+        return _read_apple_gainmap(path)
+    except Exception:
+        return None
+
+
+def _read_apple_gainmap(path: Path) -> tuple[Image.Image, float] | None:
     try:
         heif = pillow_heif.open_heif(path, convert_hdr_to_8bit=True)
         ids = (heif.info.get("aux") or {}).get(APPLE_AUX)

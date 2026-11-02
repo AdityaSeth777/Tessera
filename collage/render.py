@@ -176,7 +176,7 @@ def render_still(payload: dict, target: str, long_edge: int, progress=lambda p: 
 
 def _gain_source(meta: dict, cache: dict):
     """Gain map image for a tile's media, or a tiny black stand-in with the same aspect."""
-    if meta.get("gainmap") and meta["kind"] == "image":
+    if meta["kind"] == "image" and media.has_gainmap(meta):
         g = cache.get(meta["id"])
         if g is None:
             g = Image.open(media.media_dir(meta["id"]) / "gainmap.png").convert("RGB")
@@ -263,7 +263,7 @@ def _clip_mask(tw, th, radius_px, vis_rect) -> Image.Image:
     return mask
 
 
-def _render_clip_segment(m, t, vis, tile_size, radius_px, start, fps, target, want_audio, out, log_path):
+def _render_clip_segment(m, t, vis, tile_size, radius_px, start, fps, target, want_audio, out, log_path, max_len):
     """Pre-renders one clip's start..end segment, fully processed for its tile, as lossless FFV1.
 
     Looping this file with -stream_loop restarts exactly at the tile's start point, and the
@@ -273,7 +273,7 @@ def _render_clip_segment(m, t, vis, tile_size, radius_px, start, fps, target, wa
     tw, th = tile_size
     (sx0, sy0, sx1, sy1), (dx, dy, dw, dh) = vis
     cw, ch = max(1, int(round(sx1 - sx0))), max(1, int(round(sy1 - sy0)))
-    seg_len = max(1.0 / fps, m["duration"] - start)
+    seg_len = max(1.0 / fps, min(m["duration"] - start, max_len))
     chain = [
         "[0:v]setpts=PTS-STARTPTS", f"fps={fps}", media.video_rgb_filters(m, target),
         f"crop={cw}:{ch}:{int(round(sx0))}:{int(round(sy0))}",
@@ -319,133 +319,138 @@ def render_video(payload: dict, fmt: str, long_edge: int, opts: dict, out: Path,
     bg = color.hex_to_target(payload["canvas"].get("bg", "#ffffff"), photo_target) + (255,)
 
     work = Path(tempfile.mkdtemp(prefix="collage_", dir=media.CACHE_DIR))
-    log_path.write_text("")
-    inputs: list[list[str]] = []
-    graph: list[str] = []
-    # HDR composites in 10-bit Y'CbCr 4:4:4 (BT.2020, HLG); SDR composites in 8-bit RGB.
-    to_comp = "scale=out_color_matrix=bt2020:out_range=tv,format=yuva444p10le" if hdr else "format=rgba"
-    ov_fmt = "yuv444p10" if hdr else "rgb"
+    try:
+        log_path.write_text("")
+        inputs: list[list[str]] = []
+        graph: list[str] = []
+        # HDR composites in 10-bit Y'CbCr 4:4:4 (BT.2020, HLG); SDR composites in 8-bit RGB.
+        to_comp = "scale=out_color_matrix=bt2020:out_range=tv,format=yuva444p10le" if hdr else "format=rgba"
+        ov_fmt = "yuv444p10" if hdr else "rgb"
 
-    def add_input(args):
-        inputs.append(args)
-        return len(inputs) - 1
+        def add_input(args):
+            inputs.append(args)
+            return len(inputs) - 1
 
-    layer = Image.new("RGBA", (W, H), bg)
-    layer_tiles: list = []
-    layer_has_content = True
-    cur = None
-
-    def flush_layer():
-        nonlocal layer, layer_tiles, layer_has_content, cur
-        if not layer_has_content:
-            return
-        if hdr:
-            arr = np.asarray(layer)
-            log2 = _gain_log2(layer_tiles, W, H)
-            log2 = np.asarray(Image.fromarray(log2, "F").resize((W, H), Image.BILINEAR))
-            rgba16 = np.empty((H, W, 4), np.uint16)
-            rgba16[..., :3] = color.p3_to_hlg16(arr[..., :3], log2)
-            rgba16[..., 3] = arr[..., 3].astype(np.uint16) * 257
-            p = work / f"layer{len(inputs)}.raw"
-            p.write_bytes(rgba16.astype("<u2").tobytes())
-            idx = add_input(["-f", "rawvideo", "-pix_fmt", "rgba64le", "-s", f"{W}x{H}", "-framerate", str(fps),
-                             "-stream_loop", "-1", "-i", str(p)])
-        else:
-            p = work / f"layer{len(inputs)}.png"
-            layer.save(p, compress_level=1)
-            idx = add_input(["-loop", "1", "-framerate", str(fps), "-i", str(p)])
-        if cur is None:
-            graph.append(f"[{idx}:v]{to_comp}[b{idx}]")
-        else:
-            graph.append(f"[{idx}:v]{to_comp}[l{idx}]")
-            graph.append(f"[{cur}][l{idx}]overlay=0:0:format={ov_fmt}[b{idx}]")
-        cur = f"b{idx}"
-        layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        layer_tiles = []
-        layer_has_content = False
-
-    audio_inputs = []
-    n_clips = sum(1 for _, m in tiles if m["kind"] == "video")
-    prep_share = 0.35 if n_clips else 0.0
-    done_clips = 0
-    for t, m in tiles:
-        if m["kind"] != "video":
-            tile, pos = compose_tile(cache.image(m), t, W, H)
-            _small_paste(layer, tile, pos)
-            layer_tiles.append((t, m))
-            layer_has_content = True
-            continue
-        flush_layer()
-        x0, y0, tw, th = tile_box(t, W, H)
-        vis = visible_region(t, tw, th, m["width"], m["height"])
-        if not vis:
-            continue
-        start = float(t.get("start", 0))
-        want_audio = include_audio and t.get("audio", True) and m["hasAudio"]
-        seg = work / f"clip{len(inputs)}.mkv"
-        _render_clip_segment(m, t, vis, (tw, th), tile_radius(t, W, H), start, fps, target, want_audio, seg, log_path)
-        done_clips += 1
-        progress(prep_share * done_clips / n_clips)
-        vi = add_input(["-stream_loop", "-1", "-i", str(seg)])
-        if want_audio:
-            audio_inputs.append(vi)
-        label = f"v{vi}"
-        graph.append(f"[{vi}:v]setpts=PTS-STARTPTS,fps={fps}:round=near,{to_comp}[{label}]")
-        cx, cy = x0 + tw / 2, y0 + th / 2
-        graph.append(f"[{cur}][{label}]overlay=x='{cx:.2f}-w/2':y='{cy:.2f}-h/2':format={ov_fmt}:eof_action=repeat[o{vi}]")
-        cur = f"o{vi}"
-
-    if layer_has_content or cur is None:
+        layer = Image.new("RGBA", (W, H), bg)
+        layer_tiles: list = []
         layer_has_content = True
-        flush_layer()
+        cur = None
 
-    if hdr:
-        graph.append(f"[{cur}]format=yuv420p10le,"
-                     "setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc:range=tv[vout]")
-    else:
-        pix = "yuv420p10le" if fmt == "mov-hevc-p3" else "yuv420p"
-        prim = "smpte432" if fmt == "mov-hevc-p3" else "bt709"
-        graph.append(f"[{cur}]scale=out_color_matrix=bt709:out_range=tv,format={pix},"
-                     f"setparams=color_primaries={prim}:color_trc=bt709:colorspace=bt709:range=tv[vout]")
-    if len(audio_inputs) == 1:
-        graph.append(f"[{audio_inputs[0]}:a]aresample=48000[aout]")
-    elif audio_inputs:
-        graph.append("".join(f"[{i}:a]" for i in audio_inputs)
-                     + f"amix=inputs={len(audio_inputs)}:duration=longest:normalize=0,aresample=48000[aout]")
+        def flush_layer():
+            nonlocal layer, layer_tiles, layer_has_content, cur
+            if not layer_has_content:
+                return
+            if hdr:
+                arr = np.asarray(layer)
+                log2 = _gain_log2(layer_tiles, W, H)
+                log2 = np.asarray(Image.fromarray(log2, "F").resize((W, H), Image.BILINEAR))
+                rgba16 = np.empty((H, W, 4), np.uint16)
+                rgba16[..., :3] = color.p3_to_hlg16(arr[..., :3], log2)
+                rgba16[..., 3] = arr[..., 3].astype(np.uint16) * 257
+                p = work / f"layer{len(inputs)}.raw"
+                p.write_bytes(rgba16.astype("<u2").tobytes())
+                idx = add_input(["-f", "rawvideo", "-pix_fmt", "rgba64le", "-s", f"{W}x{H}", "-framerate", str(fps),
+                                 "-i", str(p)])
+            else:
+                p = work / f"layer{len(inputs)}.png"
+                layer.save(p, compress_level=1)
+                idx = add_input(["-framerate", str(fps), "-i", str(p)])
+            # Decode and convert the still layer once, then repeat the converted frame.
+            still = f"[{idx}:v]{to_comp},loop=loop=-1:size=1"
+            if cur is None:
+                graph.append(f"{still}[b{idx}]")
+            else:
+                graph.append(f"{still}[l{idx}]")
+                graph.append(f"[{cur}][l{idx}]overlay=0:0:format={ov_fmt}[b{idx}]")
+            cur = f"b{idx}"
+            layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            layer_tiles = []
+            layer_has_content = False
 
-    cmd = ["ffmpeg", "-y", "-v", "error", "-nostats", "-progress", "pipe:1"]
-    for args in inputs:
-        cmd += args
-    filter_file = work / "graph.txt"
-    filter_file.write_text(";\n".join(graph))
-    cmd += ["-/filter_complex", str(filter_file), "-map", "[vout]"]
-    if audio_inputs:
-        cmd += ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]
-    crf = int(opts.get("crf", 18))
-    preset = opts.get("preset", "medium")
-    if fmt == "mov-hevc-hlg":
-        cmd += ["-c:v", "libx265", "-preset", preset, "-crf", str(crf + 2), "-tag:v", "hvc1",
-                "-x265-params", "colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc:range=limited:log-level=error",
-                "-color_primaries", "bt2020", "-color_trc", "arib-std-b67", "-colorspace", "bt2020nc"]
-    elif fmt == "mov-hevc-p3":
-        cmd += ["-c:v", "libx265", "-preset", preset, "-crf", str(crf + 2), "-tag:v", "hvc1",
-                "-x265-params", "colorprim=smpte432:transfer=bt709:colormatrix=bt709:range=limited:log-level=error",
-                "-color_primaries", "smpte432", "-color_trc", "bt709", "-colorspace", "bt709"]
-    else:
-        cmd += ["-c:v", "libx264", "-preset", preset, "-crf", str(crf),
-                "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
-    cmd += ["-color_range", "tv", "-r", str(fps), "-t", f"{duration:.3f}", "-movflags", "+faststart", str(out)]
+        audio_inputs = []
+        n_clips = sum(1 for _, m in tiles if m["kind"] == "video")
+        prep_share = 0.35 if n_clips else 0.0
+        done_clips = 0
+        for t, m in tiles:
+            if m["kind"] != "video":
+                tile, pos = compose_tile(cache.image(m), t, W, H)
+                _small_paste(layer, tile, pos)
+                layer_tiles.append((t, m))
+                layer_has_content = True
+                continue
+            flush_layer()
+            x0, y0, tw, th = tile_box(t, W, H)
+            vis = visible_region(t, tw, th, m["width"], m["height"])
+            if not vis:
+                continue
+            start = float(t.get("start", 0))
+            want_audio = include_audio and t.get("audio", True) and m["hasAudio"]
+            seg = work / f"clip{len(inputs)}.mkv"
+            _render_clip_segment(m, t, vis, (tw, th), tile_radius(t, W, H), start, fps, target, want_audio, seg, log_path,
+                                 duration + 1.0 / fps)
+            done_clips += 1
+            progress(prep_share * done_clips / n_clips)
+            vi = add_input(["-stream_loop", "-1", "-i", str(seg)])
+            if want_audio:
+                audio_inputs.append(vi)
+            label = f"v{vi}"
+            graph.append(f"[{vi}:v]setpts=PTS-STARTPTS,fps={fps}:round=near,{to_comp}[{label}]")
+            cx, cy = x0 + tw / 2, y0 + th / 2
+            graph.append(f"[{cur}][{label}]overlay=x='{cx:.2f}-w/2':y='{cy:.2f}-h/2':format={ov_fmt}:eof_action=repeat[o{vi}]")
+            cur = f"o{vi}"
 
-    with open(log_path, "a") as log:
-        log.write(" ".join(cmd) + "\n\n" + filter_file.read_text() + "\n\n")
-        log.flush()
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=log, text=True)
-        for line in proc.stdout:
-            mt = re.match(r"out_time_us=(\d+)", line)
-            if mt:
-                progress(min(0.99, prep_share + (1 - prep_share) * int(mt.group(1)) / 1e6 / duration))
-        proc.wait()
-    if proc.returncode != 0:
-        raise RuntimeError("ffmpeg failed:\n" + log_path.read_text()[-2000:])
-    shutil.rmtree(work, ignore_errors=True)
+        if layer_has_content or cur is None:
+            layer_has_content = True
+            flush_layer()
+
+        if hdr:
+            graph.append(f"[{cur}]format=yuv420p10le,"
+                         "setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc:range=tv[vout]")
+        else:
+            pix = "yuv420p10le" if fmt == "mov-hevc-p3" else "yuv420p"
+            prim = "smpte432" if fmt == "mov-hevc-p3" else "bt709"
+            graph.append(f"[{cur}]scale=out_color_matrix=bt709:out_range=tv,format={pix},"
+                         f"setparams=color_primaries={prim}:color_trc=bt709:colorspace=bt709:range=tv[vout]")
+        if len(audio_inputs) == 1:
+            graph.append(f"[{audio_inputs[0]}:a]aresample=48000[aout]")
+        elif audio_inputs:
+            graph.append("".join(f"[{i}:a]" for i in audio_inputs)
+                         + f"amix=inputs={len(audio_inputs)}:duration=longest:normalize=0,aresample=48000[aout]")
+
+        cmd = ["ffmpeg", "-y", "-v", "error", "-nostats", "-progress", "pipe:1"]
+        for args in inputs:
+            cmd += args
+        filter_file = work / "graph.txt"
+        filter_file.write_text(";\n".join(graph))
+        cmd += ["-/filter_complex", str(filter_file), "-map", "[vout]"]
+        if audio_inputs:
+            cmd += ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]
+        crf = int(opts.get("crf", 18))
+        preset = opts.get("preset", "medium")
+        if fmt == "mov-hevc-hlg":
+            cmd += ["-c:v", "libx265", "-preset", preset, "-crf", str(crf + 2), "-tag:v", "hvc1",
+                    "-x265-params", "colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc:range=limited:log-level=error",
+                    "-color_primaries", "bt2020", "-color_trc", "arib-std-b67", "-colorspace", "bt2020nc"]
+        elif fmt == "mov-hevc-p3":
+            cmd += ["-c:v", "libx265", "-preset", preset, "-crf", str(crf + 2), "-tag:v", "hvc1",
+                    "-x265-params", "colorprim=smpte432:transfer=bt709:colormatrix=bt709:range=limited:log-level=error",
+                    "-color_primaries", "smpte432", "-color_trc", "bt709", "-colorspace", "bt709"]
+        else:
+            cmd += ["-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+                    "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
+        cmd += ["-color_range", "tv", "-r", str(fps), "-t", f"{duration:.3f}", "-movflags", "+faststart", str(out)]
+
+        with open(log_path, "a") as log:
+            log.write(" ".join(cmd) + "\n\n" + filter_file.read_text() + "\n\n")
+            log.flush()
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=log, text=True)
+            for line in proc.stdout:
+                mt = re.match(r"out_time_us=(\d+)", line)
+                if mt:
+                    progress(min(0.99, prep_share + (1 - prep_share) * int(mt.group(1)) / 1e6 / duration))
+            proc.wait()
+        if proc.returncode != 0:
+            raise RuntimeError("ffmpeg failed:\n" + log_path.read_text()[-2000:])
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
     return {"width": W, "height": H, "duration": duration}

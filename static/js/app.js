@@ -733,7 +733,7 @@ function renderInspector() {
   box.append(h('div', { class: 'kv' }, 'File', h('b', { title: m.name }, m.name)));
   box.append(h('div', { class: 'kv' }, 'Size', h('b', {}, `${m.width} × ${m.height}`)));
   box.append(h('div', { class: 'kv' }, 'Color', h('b', {}, m.space || '—')));
-  if (m.gainmap) box.append(h('div', { class: 'kv' }, 'HDR', h('b', {}, `gain map, ${m.headroom.toFixed(1)}× headroom`)),
+  if (m.gainmap && m.headroom) box.append(h('div', { class: 'kv' }, 'HDR', h('b', {}, `gain map, ${m.headroom.toFixed(1)}× headroom`)),
     h('p', { class: 'hint' }, 'Kept when you export with an "HDR gain map" format.'));
 
   const fit = h('div', { class: 'seg', style: { marginTop: '10px' } });
@@ -774,11 +774,12 @@ function syncVideo(v, force = false) {
   const t = el && state.tiles[el.dataset.id];
   const m = mediaOf(t);
   if (!t || !m || !v.duration) return;
-  const target = L.clipTime(v.duration, Math.min(t.start, v.duration - 0.05), transport.t);
+  const target = L.clipTime(v.duration, effectiveStart(t, v), transport.t);
   if (force || Math.abs(v.currentTime - target) > 0.08) v.currentTime = target;
   if (transport.playing) v.play().catch(() => {}); else v.pause();
 }
-function syncAllVideos() { stage.querySelectorAll('video').forEach(syncVideo); }
+function syncAllVideos() { stage.querySelectorAll('video').forEach((v) => syncVideo(v)); }
+const effectiveStart = (t, v) => Math.min(t.start, v.duration - 0.05);
 function tick() {
   if (!transport.playing) return;
   const D = timelineDuration();
@@ -786,7 +787,7 @@ function tick() {
   if (transport.t >= D) { transport.base = 0; transport.perf = performance.now(); transport.t = 0; syncAllVideos(); }
   else stage.querySelectorAll('video').forEach((v) => {
     const t = state.tiles[v.closest('.tile')?.dataset.id];
-    if (t && v.duration && v.currentTime < t.start - 0.25) syncVideo(v, true);
+    if (t && v.duration && v.currentTime < effectiveStart(t, v) - 0.25) syncVideo(v, true);
   });
   renderTransport();
   transport.raf = requestAnimationFrame(tick);
