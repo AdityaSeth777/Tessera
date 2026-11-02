@@ -23,6 +23,11 @@ def index():
     return send_from_directory(app.static_folder, "index.html")
 
 
+@app.get("/api/capabilities")
+def capabilities():
+    return jsonify({"appleHdrHeic": render.gainmap.apple_writer_available()})
+
+
 @app.get("/api/media")
 def list_media():
     items = sorted(media.load_index().values(), key=lambda m: m.get("added", 0))
@@ -88,10 +93,7 @@ def _run_export(jid, body):
         if fmt in render.STILL_FORMATS:
             ext = render.STILL_FORMATS[fmt][2]
             out = render.EXPORT_DIR / f"collage-{stamp}{ext}"
-            img = render.render_still(payload, render.STILL_FORMATS[fmt][0], long_edge,
-                                      lambda p: progress(p * 0.8))
-            render.save_still(img, fmt, out, int(body.get("quality", 92)))
-            job.update(width=img.width, height=img.height)
+            job.update(render.export_still(payload, fmt, long_edge, int(body.get("quality", 92)), out, progress))
         else:
             ext = render.VIDEO_FORMATS[fmt][1]
             out = render.EXPORT_DIR / f"collage-{stamp}{ext}"

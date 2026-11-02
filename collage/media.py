@@ -10,7 +10,7 @@ from pathlib import Path
 import pillow_heif
 from PIL import Image, ImageOps
 
-from . import color
+from . import color, gainmap
 
 pillow_heif.register_heif_opener()
 Image.MAX_IMAGE_PIXELS = 400_000_000
@@ -74,23 +74,26 @@ def open_image(path: Path) -> Image.Image:
     return img
 
 
-def _has_gainmap(path: Path) -> bool:
-    try:
-        heif = pillow_heif.open_heif(path, convert_hdr_to_8bit=True)
-        aux = heif.info.get("aux") or {}
-        return any("gainmap" in str(k).lower() for k in aux)
-    except Exception:
-        return False
-
-
-def _save_preview(img: Image.Image, out: Path, edge: int, quality: int):
+def _preview_rgb(img: Image.Image, edge: int) -> Image.Image:
     im = color.to_target(img, "p3")
     if im.mode == "RGBA":
         bg = Image.new("RGB", im.size, (255, 255, 255))
         bg.paste(im, mask=im.getchannel("A"))
         im = bg
     im.thumbnail((edge, edge), Image.LANCZOS)
-    im.save(out, "JPEG", quality=quality, icc_profile=color.p3_icc_bytes(), optimize=True)
+    return im
+
+
+def _save_preview(img: Image.Image, out: Path, edge: int, quality: int):
+    _preview_rgb(img, edge).save(out, "JPEG", quality=quality, icc_profile=color.p3_icc_bytes(), optimize=True)
+
+
+def _save_hdr_preview(img: Image.Image, gain: Image.Image, headroom: float, out: Path):
+    """Preview as Ultra HDR JPEG so browsers on HDR screens show the highlight boost in the editor."""
+    import numpy as np
+    im = _preview_rgb(img, PREVIEW_EDGE)
+    g = np.asarray(gain.resize((max(1, im.width // 2), max(1, im.height // 2)), Image.BILINEAR))
+    gainmap.write_ultrahdr_jpeg(im, color.p3_icc_bytes(), gainmap.gain_to_log2(g, headroom), out, 90)
 
 
 # ------------------------------------------------------------------ video
@@ -109,6 +112,39 @@ def _rotation(stream: dict) -> int:
             return int(round(float(sd["rotation"])))
     rot = (stream.get("tags") or {}).get("rotate")
     return int(rot) if rot else 0
+
+
+def _num(v) -> float:
+    if isinstance(v, str) and "/" in v:
+        n, d = v.split("/")
+        return float(n) / float(d) if float(d) else 0.0
+    return float(v or 0)
+
+
+def _peak_from_side_data(items) -> float | None:
+    cll = mdm = None
+    for sd in items or []:
+        kind = sd.get("side_data_type", "")
+        if kind.startswith("Content light level") and _num(sd.get("max_content")) > 0:
+            cll = _num(sd["max_content"])
+        elif kind.startswith("Mastering display") and _num(sd.get("max_luminance")) > 0:
+            mdm = _num(sd["max_luminance"])
+    return cll or mdm
+
+
+def _peak_luminance(path: Path, stream: dict) -> float | None:
+    """HDR peak in nits from MaxCLL, else mastering-display max (stream-level, then first frame)."""
+    peak = _peak_from_side_data(stream.get("side_data_list"))
+    if peak:
+        return peak
+    try:
+        out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-read_intervals", "%+#1",
+                              "-show_frames", "-print_format", "json", str(path)],
+                             capture_output=True, text=True, timeout=30).stdout
+        frames = json.loads(out).get("frames") or []
+        return _peak_from_side_data(frames[0].get("side_data_list")) if frames else None
+    except Exception:
+        return None
 
 
 def probe_video(path: Path) -> dict:
@@ -140,6 +176,7 @@ def probe_video(path: Path) -> dict:
     elif matrix.startswith("bt2020"):
         matrix = "bt2020"
     return {
+        "peak": _peak_luminance(path, v) if trc != "sdr" else None,
         "width": w, "height": h, "duration": duration, "fps": fps or 30.0,
         "hasAudio": a is not None, "primaries": prim, "transfer": trc,
         "matrix": matrix, "range": "pc" if v.get("color_range") == "pc" else "tv",
@@ -151,7 +188,7 @@ def video_rgb_filters(meta: dict, target: str) -> str:
     """Filter chain: decoded video -> 16-bit RGB in the target working space."""
     chain = [f"scale=in_color_matrix={meta['matrix']}:in_range={meta['range']}", "format=rgb48le"]
     if color.needs_lut(meta["primaries"], meta["transfer"], target):
-        lut = color.lut_path(CACHE_DIR, meta["primaries"], meta["transfer"], target)
+        lut = color.lut_path(CACHE_DIR, meta["primaries"], meta["transfer"], target, meta.get("peak"))
         chain.append(f"lut3d=file='{lut}':interp=tetrahedral")
     return ",".join(chain)
 
@@ -213,9 +250,15 @@ def ingest(upload_path: Path, original_name: str) -> dict:
         else:
             img = open_image(src)
             meta.update(kind="image", width=img.width, height=img.height,
-                        space=color.describe_space(img), wide=color.is_wide_gamut(img),
-                        gainmap=ext in (".heic", ".heif", ".hif") and _has_gainmap(src))
-            _save_preview(img, d / "preview.jpg", PREVIEW_EDGE, 90)
+                        space=color.describe_space(img), wide=color.is_wide_gamut(img))
+            gm = gainmap.read_apple_gainmap(src) if ext in (".heic", ".heif", ".hif") else None
+            if gm:
+                gimg, headroom = gm
+                gimg.save(d / "gainmap.png")
+                meta.update(gainmap=True, headroom=headroom)
+                _save_hdr_preview(img, gimg, headroom, d / "preview.jpg")
+            else:
+                _save_preview(img, d / "preview.jpg", PREVIEW_EDGE, 90)
             _save_preview(img, d / "thumb.jpg", THUMB_EDGE, 82)
     except Exception:
         shutil.rmtree(d, ignore_errors=True)
@@ -240,7 +283,7 @@ def public(meta: dict) -> dict:
     base = f"/m/{meta['id']}"
     out = {k: meta[k] for k in ("id", "kind", "name", "ext", "width", "height", "aspect")}
     out.update(space=meta.get("space"), wide=meta.get("wide", False),
-               gainmap=meta.get("gainmap", False),
+               gainmap=meta.get("gainmap", False), headroom=meta.get("headroom"),
                preview=f"{base}/preview.jpg", thumb=f"{base}/thumb.jpg")
     if meta["kind"] == "video":
         out.update(duration=meta["duration"], hasAudio=meta["hasAudio"], fps=meta["fps"],

@@ -25,6 +25,7 @@ const defaults = () => ({
 });
 
 let library = [];
+let caps = {};
 const mediaById = {};
 let state = loadState();
 let undoStack = [], redoStack = [];
@@ -215,9 +216,10 @@ function stageSize() {
 
 function mediaEl(m) {
   if (m.kind === 'video') {
-    const v = h('video', { class: 'media', src: m.proxy, muted: true, loop: true, playsinline: true, preload: 'auto' });
+    const v = h('video', { class: 'media', src: m.proxy, muted: true, playsinline: true, preload: 'auto' });
     v.muted = true;
     v.addEventListener('loadedmetadata', () => syncVideo(v));
+    v.addEventListener('ended', () => syncVideo(v, true));
     return v;
   }
   return h('img', { class: 'media', src: m.preview, draggable: 'false' });
@@ -534,6 +536,7 @@ function badgesFor(m) {
     if ((m.space || '').startsWith('HDR')) out.push(h('span', { class: 'badge hdr' }, 'HDR'));
   }
   if (m.wide && !(m.space || '').startsWith('HDR')) out.push(h('span', { class: 'badge p3' }, 'P3'));
+  if (m.gainmap) out.push(h('span', { class: 'badge hdr' }, 'HDR'));
   return out;
 }
 
@@ -730,7 +733,8 @@ function renderInspector() {
   box.append(h('div', { class: 'kv' }, 'File', h('b', { title: m.name }, m.name)));
   box.append(h('div', { class: 'kv' }, 'Size', h('b', {}, `${m.width} × ${m.height}`)));
   box.append(h('div', { class: 'kv' }, 'Color', h('b', {}, m.space || '—')));
-  if (m.gainmap) box.append(h('p', { class: 'hint' }, 'This HEIC has an HDR gain map. Its Display P3 color is kept; the extra HDR brightness boost is not carried into the export.'));
+  if (m.gainmap) box.append(h('div', { class: 'kv' }, 'HDR', h('b', {}, `gain map, ${m.headroom.toFixed(1)}× headroom`)),
+    h('p', { class: 'hint' }, 'Kept when you export with an "HDR gain map" format.'));
 
   const fit = h('div', { class: 'seg', style: { marginTop: '10px' } });
   for (const [id, label] of [['cover', 'Fill cell'], ['contain', 'Show whole']]) {
@@ -765,13 +769,13 @@ function timelineDuration() {
   const lens = videoTiles().map((t) => Math.max(0.1, mediaOf(t).duration - t.start));
   return lens.length ? Math.max(...lens) : 0;
 }
-function syncVideo(v) {
+function syncVideo(v, force = false) {
   const el = v.closest('.tile');
   const t = el && state.tiles[el.dataset.id];
   const m = mediaOf(t);
   if (!t || !m || !v.duration) return;
   const target = L.clipTime(v.duration, Math.min(t.start, v.duration - 0.05), transport.t);
-  if (Math.abs(v.currentTime - target) > 0.08) v.currentTime = target;
+  if (force || Math.abs(v.currentTime - target) > 0.08) v.currentTime = target;
   if (transport.playing) v.play().catch(() => {}); else v.pause();
 }
 function syncAllVideos() { stage.querySelectorAll('video').forEach(syncVideo); }
@@ -780,6 +784,10 @@ function tick() {
   const D = timelineDuration();
   transport.t = transport.base + (performance.now() - transport.perf) / 1000;
   if (transport.t >= D) { transport.base = 0; transport.perf = performance.now(); transport.t = 0; syncAllVideos(); }
+  else stage.querySelectorAll('video').forEach((v) => {
+    const t = state.tiles[v.closest('.tile')?.dataset.id];
+    if (t && v.duration && v.currentTime < t.start - 0.25) syncVideo(v, true);
+  });
   renderTransport();
   transport.raf = requestAnimationFrame(tick);
 }
@@ -894,6 +902,10 @@ function startDialog({ fresh, first = false }) {
   { closable: !first });
 }
 
+const HDR_STILLS = [
+  ['jpeg-p3-hdr', 'JPEG · Display P3 + HDR gain map', 'Ultra HDR: glowing highlights on HDR screens (Mac, iPhone, Chrome, Android), normal elsewhere.'],
+  ['heic-p3-hdr', 'HEIC · Display P3 + HDR gain map', 'Apple\'s own iPhone HDR format, written by macOS. Best in Photos on Apple devices.'],
+];
 const STILLS = [
   ['jpeg-p3', 'JPEG · Display P3', 'Keeps the iPhone "pop", opens almost everywhere. Recommended.'],
   ['heic-p3', 'HEIC · Display P3', 'Apple format, smallest files, full wide color.'],
@@ -905,6 +917,7 @@ const STILLS = [
 const VIDEOS = [
   ['mp4-h264', 'MP4 · H.264 (sRGB)', 'Plays everywhere: Instagram, WhatsApp, web.'],
   ['mov-hevc-p3', 'MOV · HEVC 10-bit · Display P3', 'Wide color video for Apple devices.'],
+  ['mov-hevc-hlg', 'MOV · HEVC 10-bit · HDR (HLG)', 'Keeps HDR clips HDR (no tone mapping) and carries photo gain maps. For HDR screens.'],
 ];
 
 function exportCanvasSize(longEdge) {
@@ -933,7 +946,9 @@ function exportDialog() {
   if (!tileCount()) { toast('Add some photos first'); return; }
   setPlaying(false);
   const hasVideo = videoTiles().length > 0;
-  const opt = { format: hasVideo ? 'mp4-h264' : 'jpeg-p3', still: 4096, video: 1920, quality: 92, fps: 30, durationMode: 'longest', custom: 10, audio: true, crf: 18 };
+  const hasGain = Object.values(state.tiles).some((t) => mediaOf(t)?.gainmap);
+  const hdrStills = HDR_STILLS.filter(([id]) => id !== 'heic-p3-hdr' || caps.appleHdrHeic);
+  const opt = { format: hasVideo ? 'mp4-h264' : hasGain ? 'jpeg-p3-hdr' : 'jpeg-p3', still: 4096, video: 1920, quality: 92, fps: 30, durationMode: 'longest', custom: 10, audio: true, crf: 18 };
   const body = h('div');
   const isVideo = () => opt.format.startsWith('mp4') || opt.format.startsWith('mov');
 
@@ -947,7 +962,8 @@ function exportDialog() {
     if (hasVideo) left.append(h('h3', {}, 'Video (clips play)'), list(VIDEOS), h('h3', { style: { marginTop: '16px' } }, 'Still image'),
       h('p', { class: 'hint' }, `Videos are captured at the playhead (${fmtTime(transport.t)}).`));
     else left.append(h('h3', {}, 'Image format'));
-    left.append(list(STILLS));
+    if (hasGain) left.append(h('p', { class: 'hint' }, 'Your collage has iPhone HDR photos — pick an HDR format to keep their glow.'));
+    left.append(list([...hdrStills, ...STILLS]));
 
     const right = h('div', {});
     const sizes = isVideo() ? [1080, 1280, 1920, 2560, 3840] : [2048, 3072, 4096, 6000, 8192];
@@ -1002,6 +1018,7 @@ function exportDialog() {
           const mb = (job.size / 1048576).toFixed(1);
           status.append(h('div', { class: 'done-box' },
             h('b', {}, `Done — ${job.width}×${job.height}, ${mb} MB, ${job.elapsed.toFixed(1)}s`),
+            job.hdr ? h('div', { class: 'hint' }, `HDR gain map embedded (${job.headroom}× headroom)`) : null,
             h('div', { class: 'row' },
               h('a', { class: 'btn small', href: `/exports/${encodeURIComponent(job.file)}?dl=1`, download: job.file }, 'Download'),
               h('a', { class: 'btn small', href: `/exports/${encodeURIComponent(job.file)}`, target: '_blank' }, 'Open')),
@@ -1074,6 +1091,7 @@ document.addEventListener('keydown', (e) => {
 async function init() {
   try {
     library = await (await fetch('/api/media')).json();
+    caps = await (await fetch('/api/capabilities')).json();
   } catch {
     toast('Could not reach the local server', true);
   }

@@ -168,6 +168,8 @@ def normalize_transfer(t: str | None) -> str:
 
 
 def needs_lut(primaries: str, transfer: str, target: str) -> bool:
+    if target == "hlg":
+        return not (transfer == "hlg" and primaries == "bt2020")
     dst = "p3" if target == "p3" else "bt709"
     return transfer != "sdr" or primaries != dst
 
@@ -198,10 +200,28 @@ def _pq_to_nits(e):
     return 10000.0 * np.power(np.maximum(p - c1, 0) / (c2 - c3 * p), 1 / m1)
 
 
-def _tonemap(x):
-    """Identity below the knee, smooth exponential shoulder to 1.0 above it."""
-    k = 0.6
-    return np.where(x <= k, x, k + (1 - k) * (1 - np.exp(-(x - k) / (1 - k))))
+def bt2446a(nits_2020, l_hdr: float, l_sdr: float = 100.0):
+    """ITU-R BT.2446-1 Method A HDR->SDR tone mapping.
+
+    Input: BT.2020 display light in cd/m². Output: BT.2020 linear light where 1.0 is SDR
+    reference white (BT.1886 gamma 2.4 decoded)."""
+    lum = np.array([0.2627, 0.6780, 0.0593])
+    p = np.power(np.clip(nits_2020 / l_hdr, 0, 1), 1 / 2.4)
+    y = p @ lum
+    rho_h = 1 + 32 * (l_hdr / 10000) ** (1 / 2.4)
+    yp = np.log1p((rho_h - 1) * y) / np.log(rho_h)
+    yc = np.where(yp <= 0.7399, 1.0770 * yp,
+                  np.where(yp < 0.9909, -1.1510 * yp ** 2 + 2.7811 * yp - 0.6302, 0.5 * yp + 0.5))
+    rho_s = 1 + 32 * (l_sdr / 10000) ** (1 / 2.4)
+    ysdr = (np.power(rho_s, yc) - 1) / (rho_s - 1)
+    f = np.where(y > 1e-9, ysdr / (1.1 * np.maximum(y, 1e-9)), 0.0)
+    cb = f * (p[..., 2] - y) / 1.8814
+    cr = f * (p[..., 0] - y) / 1.4746
+    yt = ysdr - np.maximum(0.1 * cr, 0)
+    r = yt + 1.4746 * cr
+    b = yt + 1.8814 * cb
+    g = (yt - lum[0] * r - lum[2] * b) / lum[1]
+    return np.power(np.clip(np.stack([r, g, b], axis=-1), 0, 1), 2.4)
 
 
 def _gamut_compress(rgb, lum_coeffs):
@@ -211,7 +231,18 @@ def _gamut_compress(rgb, lum_coeffs):
     return y + np.clip(t, 0, 1) * (rgb - y)
 
 
-def build_cube(primaries: str, transfer: str, target: str, size: int = 33) -> str:
+HLG_NOMINAL_PEAK = 1000.0
+
+
+def hdr_peak(transfer: str, peak: float | None) -> float:
+    if transfer == "hlg":
+        return HLG_NOMINAL_PEAK
+    if peak and peak > 0:
+        return float(min(max(peak, 400.0), 10000.0))
+    return 1000.0
+
+
+def build_cube(primaries: str, transfer: str, target: str, size: int = 33, peak: float | None = None) -> str:
     """3D LUT text (.cube) mapping decoded video RGB to sRGB-encoded target-space RGB."""
     dst = "p3" if target == "p3" else "bt709"
     g = np.linspace(0, 1, size)
@@ -219,14 +250,12 @@ def build_cube(primaries: str, transfer: str, target: str, size: int = 33) -> st
     e = np.stack([r, gg, b], axis=-1).reshape(-1, 3)
 
     if transfer == "sdr":
-        lin = _srgb_eotf(e)
+        lin = _srgb_eotf(e) @ _conv_matrix(primaries, dst).T
     else:
         nits = _hlg_to_nits(e, primaries) if transfer == "hlg" else _pq_to_nits(e)
-        x = nits / 203.0 * 0.9
-        m = np.max(x, axis=-1, keepdims=True)
-        lin = x * (_tonemap(m) / np.maximum(m, 1e-9))
-
-    lin = lin @ _conv_matrix(primaries, dst).T
+        if primaries != "bt2020":
+            nits = nits @ _conv_matrix(primaries, "bt2020").T
+        lin = bt2446a(nits, hdr_peak(transfer, peak)) @ _conv_matrix("bt2020", dst).T
     lin = _gamut_compress(lin, _rgb_to_xyz(_PRIMARIES[dst])[1])
     m = np.max(lin, axis=-1, keepdims=True)
     lin = lin / np.maximum(m, 1.0)
@@ -237,10 +266,69 @@ def build_cube(primaries: str, transfer: str, target: str, size: int = 33) -> st
     return "\n".join(lines) + "\n"
 
 
-def lut_path(cache_dir: Path, primaries: str, transfer: str, target: str) -> Path:
+# ---------------------------------------------------------------- HLG output
+
+SDR_WHITE_NITS = 203.0  # BT.2408 reference white for SDR content placed in HDR
+HLG_PEAK = 1000.0
+_LUM2020 = np.array([0.2627, 0.6780, 0.0593])
+
+
+def hlg_oetf(e):
+    a, b, c = 0.17883277, 0.28466892, 0.55991073
+    e = np.clip(e, 0, 1)
+    return np.where(e <= 1 / 12, np.sqrt(3 * e), a * np.log(np.maximum(12 * e - b, 1e-12)) + c)
+
+
+def _limit_peak(nits, peak=HLG_PEAK):
+    """Soft-clips max(RGB) above 75% of peak so nothing exceeds the HLG nominal display peak."""
+    m = np.max(nits, axis=-1, keepdims=True)
+    k = 0.75 * peak
+    soft = k + (peak - k) * (1 - np.exp(-(m - k) / (peak - k)))
+    return nits * np.where(m > k, soft / np.maximum(m, 1e-9), 1.0)
+
+
+def nits_to_hlg(nits_2020):
+    """BT.2100 HLG inverse EOTF (Lw = 1000 cd/m², gamma 1.2): display light -> HLG signal."""
+    fd = np.clip(_limit_peak(np.clip(nits_2020, 0, None)), 0, None) / HLG_PEAK
+    yd = np.clip(fd @ _LUM2020, 0, 1)
+    ys = np.power(yd, 1 / 1.2)
+    scale = np.where(yd > 1e-12, 1 / np.maximum(np.power(np.maximum(ys, 1e-12), 0.2), 1e-12), 0.0)
+    return hlg_oetf(np.clip(fd * scale[..., None], 0, 1))
+
+
+def build_cube_hlg(primaries: str, transfer: str, size: int, peak: float | None = None) -> str:
+    g = np.linspace(0, 1, size)
+    b, gg, r = np.meshgrid(g, g, g, indexing="ij")
+    e = np.stack([r, gg, b], axis=-1).reshape(-1, 3)
+    if transfer == "sdr":
+        nits = _srgb_eotf(e) * SDR_WHITE_NITS
+    elif transfer == "pq":
+        nits = _pq_to_nits(e)
+    else:
+        nits = _hlg_to_nits(e, primaries)
+    nits = _gamut_compress(nits @ _conv_matrix(primaries, "bt2020").T, _LUM2020)
+    out = nits_to_hlg(nits)
+    lines = [f"LUT_3D_SIZE {size}"] + [f"{v[0]:.6f} {v[1]:.6f} {v[2]:.6f}" for v in out]
+    return "\n".join(lines) + "\n"
+
+
+def p3_to_hlg16(rgb8: np.ndarray, log2_boost: np.ndarray | None) -> np.ndarray:
+    """8-bit Display P3 pixels (+ optional HDR gain) -> 16-bit HLG BT.2020 signal."""
+    lin = _srgb_eotf(rgb8.astype(np.float32) / 255.0).astype(np.float32)
+    if log2_boost is not None:
+        lin *= np.exp2(log2_boost)[..., None].astype(np.float32)
+    nits = (lin * SDR_WHITE_NITS) @ _conv_matrix("p3", "bt2020").T.astype(np.float32)
+    return (nits_to_hlg(nits) * 65535 + 0.5).astype(np.uint16)
+
+
+def lut_path(cache_dir: Path, primaries: str, transfer: str, target: str, peak: float | None = None) -> Path:
     cache_dir.mkdir(parents=True, exist_ok=True)
-    p = cache_dir / f"lut_{primaries}_{transfer}_{target}.cube"
+    pk = "" if transfer == "sdr" else f"_{int(hdr_peak(transfer, peak))}"
+    p = cache_dir / f"lut2_{primaries}_{transfer}{pk}_{target}.cube"
     if not p.exists():
-        size = 33 if transfer == "sdr" else 49
-        p.write_text(build_cube(primaries, transfer, target, size))
+        size = 33 if transfer == "sdr" else 65
+        if target == "hlg":
+            p.write_text(build_cube_hlg(primaries, transfer, size, peak))
+        else:
+            p.write_text(build_cube(primaries, transfer, target, size, peak))
     return p

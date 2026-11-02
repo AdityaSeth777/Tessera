@@ -269,8 +269,8 @@ export function computeLayout(state, W, H) {
   return { items: out, dividers, rects };
 }
 
+// A clip plays start..end and then loops back to start (matches the exporter).
 export function clipTime(duration, start, t) {
-  if (!duration) return 0;
-  const first = duration - start;
-  return t < first ? start + t : (t - first) % duration;
+  const seg = duration - start;
+  return seg > 0 ? start + (t % seg) : Math.max(0, start);
 }
