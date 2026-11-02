@@ -37,10 +37,11 @@ A collage maker that runs entirely on your Mac. Photos and videos never leave th
    - [Frame-accurate looping](#711-frame-accurate-looping)
    - [Preview playback sync](#712-preview-playback-sync)
    - [Undo / redo history](#713-undo--redo-history)
-8. [HTTP API](#http-api)
-9. [Project layout](#project-layout)
-10. [How it was verified](#how-it-was-verified)
-11. [Known limits](#known-limits)
+8. [Security model](#security-model)
+9. [HTTP API](#http-api)
+10. [Project layout](#project-layout)
+11. [How it was verified](#how-it-was-verified)
+12. [Known limits](#known-limits)
 
 ---
 
@@ -50,7 +51,7 @@ A collage maker that runs entirely on your Mac. Photos and videos never leave th
 ./start.sh
 ```
 
-This opens http://127.0.0.1:5173. The first run creates a Python venv and installs Flask, Pillow, pillow-heif, numpy and (on macOS) PyObjC Quartz. It needs Python 3 and `ffmpeg` (`brew install ffmpeg`); Xcode is not required. The server listens on `127.0.0.1` only.
+This opens http://127.0.0.1:5173. The first run creates a Python venv and installs Flask, Pillow, pillow-heif, numpy and (on macOS) PyObjC Quartz. It needs Python 3 and `ffmpeg` (`brew install ffmpeg`); Xcode is not required. The server listens on `127.0.0.1` only and refuses requests from other websites (see [Security model](#security-model)).
 
 Exports are written to `exports/`, and imported media is kept in `workspace/`.
 
@@ -322,6 +323,9 @@ sequenceDiagram
         S->>M: ingest(tmp, name)
         alt video
             M->>FF: ffprobe streams, rotation, color tags
+            opt container reports no duration
+                M->>FF: scan packets (last end time, else count / fps)
+            end
             M->>FF: first-frame side data (MaxCLL / mastering peak)
             M->>FF: extract frame through color LUT
             M->>M: preview.jpg + thumb.jpg (P3)
@@ -421,7 +425,7 @@ sequenceDiagram
         R->>R: composite into an RGBA layer (8-bit PNG or 16-bit HLG raw)
     end
     loop each video tile (progress 0 to 35%)
-        R->>FF: pre-pass with -ss start, exact segment, color LUT, crop, scale, pad, mask, rotate to FFV1
+        R->>FF: pre-pass with -ss start, exact segment (capped at export length), color LUT, crop, scale, pad, mask, rotate to FFV1
         FF-->>R: clipN.mkv (lossless)
     end
     R->>R: write filter graph (layers + looped segments + audio mix)
@@ -431,7 +435,7 @@ sequenceDiagram
         R-->>S: progress
     end
     FF-->>R: MP4 / MOV
-    R->>R: delete temp folder
+    R->>R: delete temp folder (in finally, also when the export fails)
 ```
 
 ### Export job lifecycle
@@ -736,6 +740,8 @@ flowchart TD
 
 If the collage ends up with no boost anywhere (`max < 0.02` stops), a normal JPEG/HEIC is written instead.
 
+A photo only counts as HDR when its metadata has a headroom **and** `gainmap.png` exists (`media.has_gainmap`). Files imported by older versions that only carry the flag are treated as SDR. Any error while reading a gain map also imports the photo as SDR, never as a failed upload.
+
 ### 7.9 Ultra HDR JPEG file layout
 
 The file is a normal JPEG followed by a second JPEG holding the gain map, linked through the Multi-Picture Format (MPF) and described by Adobe/Google `hdrgm` XMP. macOS ImageIO reads it as an ISO 21496-1 gain map; Chrome and Android show it in HDR.
@@ -769,10 +775,10 @@ Tiles are processed in z-order. Runs of photos become **layers**, and each video
 
 ```mermaid
 flowchart LR
-    BG["layer 0<br/>background + photos<br/>below first video"] --> O1(("overlay"))
+    BG["layer 0<br/>background + photos<br/>below first video<br/>(converted once, loop filter)"] --> O1(("overlay"))
     V1["clip1.mkv<br/>-stream_loop -1"] --> O1
     O1 --> O2(("overlay"))
-    L1["layer 2<br/>photos above clip 1"] --> O2
+    L1["layer 2<br/>photos above clip 1<br/>(converted once, loop filter)"] --> O2
     O2 --> O3(("overlay<br/>x = cx − w/2"))
     V2["clip3.mkv<br/>rotated, -stream_loop -1"] --> O3
     O3 --> ENC["format / setparams<br/>color tags"]
@@ -797,12 +803,13 @@ flowchart LR
     MP --> RO{"rotated?"}
     RO -->|yes| R["rotate, c=none"]
     RO -->|no| E
-    R --> E["-t (duration − start)<br/>FFV1 lossless + PCM audio"]
+    R --> E["-t min(duration − start, export length)<br/>FFV1 lossless + PCM audio"]
 ```
 
 | | SDR (H.264 / HEVC P3) | HDR (HEVC HLG) |
 |---|---|---|
 | Photo layers | 8-bit RGBA PNG in sRGB or P3 | 16-bit RGBA raw: P3 → linear × 2^gain × 203 nits → BT.2020 → HLG |
+| Layer reuse | decoded + converted once, repeated with `loop=-1:size=1` | same |
 | Clip segments | FFV1 `bgra` | FFV1 `gbrap16le` |
 | Composite space | 8-bit RGB `overlay` | 10-bit Y'CbCr 4:4:4 BT.2020 `overlay` |
 | Output | `yuv420p` / `yuv420p10le`, BT.709 or P3 tags | `yuv420p10le`, BT.2020 + ARIB STD-B67 tags |
@@ -815,6 +822,8 @@ flowchart LR
 | rotate | full |
 | `mergeplanes` | full |
 | `alphamerge` | **258 (8-bit)** — so it isn't used |
+
+**Resource use.** Clip segments are rendered only as long as the export needs, so a 5 s export of a 3-minute clip encodes 5 s. Still layers are converted to the composite format once and repeated with the `loop` filter, rather than being re-read every frame: a 4K 16-bit layer is 66 MB, and an HLG test export dropped from 4.2 s to 3.3 s. The temp folder (FFV1 segments, raw layers, masks) is deleted in a `finally` block, so a failed export leaves nothing behind.
 
 ### 7.11 Frame-accurate looping
 
@@ -885,6 +894,38 @@ flowchart TD
 
 ---
 
+## Security model
+
+The app is a web server on your machine, so any website open in your browser can try to talk to it. Two kinds of attack matter:
+
+- **DNS rebinding:** a hostile site points its own domain at `127.0.0.1`, which would let it read your library and photo previews.
+- **Cross-site requests:** a page silently POSTs uploads or exports to `http://127.0.0.1:5173`.
+
+Every request goes through `local_only()` in `server.py`:
+
+```mermaid
+flowchart TD
+    R["incoming request"] --> H{"Host header is<br/>127.0.0.1:PORT or localhost:PORT?"}
+    H -->|no| D1["403<br/>(blocks DNS rebinding reads)"]
+    H -->|yes| M{"method GET / HEAD?"}
+    M -->|yes| OK["handle request"]
+    M -->|no| O{"Origin header present?"}
+    O -->|no| OK2["no Origin: not a browser<br/>cross-site request, continue"]
+    O -->|yes| SO{"Origin host is<br/>127.0.0.1:PORT or localhost:PORT?"}
+    SO -->|no, including null| D2["403<br/>(blocks cross-site uploads, exports, deletes)"]
+    SO -->|yes| OK3["same-origin write, continue"]
+    OK2 --> J{"POST /api/export?"}
+    OK3 --> J
+    J -->|"body is not application/json"| D3["415<br/>(text/plain cannot skip the CORS preflight)"]
+    J -->|"JSON / other routes"| OK
+```
+
+Other protections:
+- Media files are served only by id from a fixed list of names (`preview.jpg`, `thumb.jpg`, `proxy.mp4`).
+- Exports go through Flask's `send_from_directory`, which rejects path traversal.
+- Uploaded files are stored under generated ids, never under their original names.
+- The UI inserts file names as text, never as HTML.
+
 ## HTTP API
 
 | Method | Path | Purpose |
@@ -914,6 +955,15 @@ The export payload (`collage`), with every value normalized to the canvas:
 ```
 
 `radius` is a fraction of the canvas short edge. `time` is the playhead position, used to pick video frames for still exports.
+
+Error codes:
+
+| Code | When |
+| --- | --- |
+| 403 | Wrong `Host`, or a write from another origin (see [Security model](#security-model)) |
+| 415 | `POST /api/export` body isn't JSON |
+| 400 | Unknown export format |
+| 404 | Unknown media id, file name or job id |
 
 ## Project layout
 
@@ -950,6 +1000,10 @@ local-collage/
 | HLG math | 203 nits round trip | → 0.7499 → 203.0 nits |
 | Bit depth | 16-bit gradient through each filter | see the table in 7.10 |
 | Editor | Playwright + Chrome: start dialog, auto layout, dividers, circle, freeform, undo, all export types | No console errors |
+| Security | curl with a foreign `Host`, a foreign / `null` `Origin`, and a `text/plain` export | 403, 403, 415; local use unaffected |
+| Failure cleanup | Export forced to fail mid-pipeline | No temp folders left in `workspace/cache` |
+| Layer reuse | 4K 16-bit layer for 5 s at 30 fps: input looping vs `loop` filter | System time 3.0 s → 0.1 s; HLG test export 4.2 s → 3.3 s |
+| Missing duration | MP4, WebM, raw `.h264` | 3.00 s, 3.00 s, 3.60 s (raw H.264 has no frame rate, so ffmpeg assumes 25 fps) |
 
 ## Known limits
 
