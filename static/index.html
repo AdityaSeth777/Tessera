@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Collage</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Local Collage <span class="muted">· runs on this Mac</span></div>
+    <div class="top-actions">
+      <button id="btnUndo" class="ghost" title="Undo (⌘Z)">Undo</button>
+      <button id="btnRedo" class="ghost" title="Redo (⇧⌘Z)">Redo</button>
+      <button id="btnNew" class="ghost">New collage</button>
+      <button id="btnExport" class="primary">Export</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="panel left" id="library">
+      <div class="panel-head">
+        <h2>Library</h2>
+        <label class="btn small">Add files
+          <input id="fileInput" type="file" multiple accept="image/*,video/*,.heic,.heif,.hif,.mov,.mp4,.m4v" hidden>
+        </label>
+      </div>
+      <p class="hint">HEIC, JPEG, PNG, TIFF, WebP, MOV, MP4… Drop files anywhere. Click to add to the collage.</p>
+      <div id="libGrid" class="lib-grid"></div>
+    </aside>
+
+    <section class="center">
+      <div id="stageWrap" class="stage-wrap">
+        <div id="stage" class="stage"></div>
+        <div id="emptyHint" class="empty-hint">Add photos or videos from the library<br><span>or drop files here</span></div>
+      </div>
+      <div id="transport" class="transport hidden">
+        <button id="btnPlay" class="ghost play">▶</button>
+        <input id="scrub" type="range" min="0" max="1000" value="0">
+        <span id="timeLabel" class="mono">0:00 / 0:00</span>
+      </div>
+    </section>
+
+    <aside class="panel right" id="controls">
+      <section class="group">
+        <h3>Format</h3>
+        <div id="formatChips" class="chips"></div>
+        <div class="row custom-ratio">
+          <span class="muted">Custom</span>
+          <input id="ratioW" type="number" min="0.1" step="0.1"> :
+          <input id="ratioH" type="number" min="0.1" step="0.1">
+          <button id="btnSwapRatio" class="ghost small" title="Swap portrait / landscape">⇄</button>
+        </div>
+        <button id="btnFitCanvas" class="ghost small wide">Fit canvas to photos (no cropping)</button>
+      </section>
+
+      <section class="group">
+        <h3>Layout</h3>
+        <div class="seg" id="modeSeg">
+          <button data-mode="grid">Grid</button>
+          <button data-mode="free">Freeform</button>
+        </div>
+        <div class="row gap">
+          <button id="btnAuto" class="primary small grow">Auto layout</button>
+          <button id="btnShuffle" class="ghost small">Shuffle</button>
+          <button id="btnBalance" class="ghost small" title="Resize cells to match photo shapes">Fit sizes</button>
+        </div>
+        <label class="check"><input type="checkbox" id="keepOrder"> Keep my order in Auto</label>
+        <div id="templates" class="templates"></div>
+      </section>
+
+      <section class="group" id="styleGroup"></section>
+
+      <section class="group" id="inspector"></section>
+    </aside>
+  </main>
+
+  <div id="modalRoot"></div>
+  <div id="toasts" class="toasts"></div>
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>
