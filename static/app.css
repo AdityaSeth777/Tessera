@@ -39,7 +39,8 @@ button.wide { width: 100%; margin-top: 8px; }
   height: 48px; flex: none; display: flex; align-items: center; justify-content: space-between;
   padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--panel);
 }
-.brand { font-weight: 650; letter-spacing: .2px; }
+.brand { font-weight: 650; letter-spacing: .2px; display: flex; align-items: center; gap: 6px; }
+.brand-mark { width: 16px; height: 16px; flex: none; }
 .top-actions { display: flex; gap: 6px; }
 
 .workspace { flex: 1; display: flex; min-height: 0; }

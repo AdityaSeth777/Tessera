@@ -1,5 +1,8 @@
 .venv/
+.venv-test/
+.pytest_cache/
 __pycache__/
 workspace/
 exports/
 .DS_Store
+brag-output/

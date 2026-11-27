@@ -160,7 +160,7 @@ XMP_NS = b"http://ns.adobe.com/xap/1.0/\x00"
 
 def _xmp_gainmap(max_log2: float) -> bytes:
     return (
-        '<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="local-collage">'
+        '<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Tessera">'
         '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
         '<rdf:Description rdf:about="" xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/" '
         f'hdrgm:Version="1.0" hdrgm:GainMapMin="0" hdrgm:GainMapMax="{max_log2:.6f}" hdrgm:Gamma="1" '
@@ -172,7 +172,7 @@ def _xmp_gainmap(max_log2: float) -> bytes:
 
 def _xmp_primary(gain_len: int) -> bytes:
     return (
-        '<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="local-collage">'
+        '<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Tessera">'
         '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
         '<rdf:Description rdf:about="" '
         'xmlns:Container="http://ns.google.com/photos/1.0/container/" '

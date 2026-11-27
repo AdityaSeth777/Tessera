@@ -1,59 +1,60 @@
-# local-collage
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-wordmark-light.png">
+    <img alt="Tessera" src="assets/logo-wordmark-dark.png" width="360">
+  </picture>
+</p>
 
-A collage maker that runs entirely on your Mac. Photos and videos never leave the machine.
+**Make photo collages on your Mac without losing the color and HDR your iPhone captured.**
 
-- **HEIC stays HEIC.** iPhone photos are decoded directly with libheif in their **Display P3** wide color, composited in P3, and encoded once at export. There is no JPEG round trip, so the "pop" survives.
-- **HDR is kept.** iPhone HDR gain maps are carried into **Ultra HDR JPEG** or **Apple HDR HEIC** exports, and HDR video can be exported as **HEVC HLG**.
-- **Mix anything:** HEIC, JPEG, PNG, TIFF, WebP, AVIF, plus MOV/MP4 (including iPhone HDR/HLG video).
-- **Videos play inside their tile.** A collage with clips exports as a video. Clips loop frame-accurately from their chosen start point.
-- **Layouts for 1–10 tiles:**
-  - **Auto layout** picks the arrangement that crops your photos least.
-  - A **template gallery** (up to 106 layouts for 10 tiles).
-  - **Draggable dividers** between tiles.
-  - A **freeform** mode: move, resize, rotate, overlap.
-- **Style:** any canvas format (1:1, 4:5, 9:16, 1.91:1, 16:9, print sizes, A-series, custom), **sharp / rounded / circle** tiles, spacing and border sliders, and a padding color chosen by picker, hex code or swatch.
+An iPhone photo holds more than an ordinary picture. It has colors richer than a standard screen can show (called *Display P3*), plus a hidden brightness layer that makes skies, lamps and reflections glow on HDR screens. Most collage apps and websites flatten all of that into a plain JPEG, often on a server you've never heard of. Tessera builds the collage on your own Mac and keeps both.
 
----
+[![Watch the Tessera demo](assets/demo-poster.jpg)](assets/demo.mp4)
 
-## Contents
-
-1. [Run](#run)
-2. [Using it](#using-it)
-3. [Export formats](#export-formats)
-4. [Architecture](#architecture)
-5. [Data model](#data-model)
-6. [Workflows (sequence diagrams)](#workflows)
-7. [Algorithms](#algorithms)
-   - [Layout tree and geometry](#71-layout-tree-and-geometry)
-   - [Template generation](#72-template-generation)
-   - [Auto layout](#73-auto-layout)
-   - [Placement: crop, pan, zoom](#74-placement-crop-pan-zoom)
-   - [Tile shapes and masks](#75-tile-shapes-and-masks)
-   - [Color management for photos](#76-color-management-for-photos)
-   - [Video color and HDR tone mapping (BT.2446 Method A)](#77-video-color-and-hdr-tone-mapping)
-   - [HDR gain maps](#78-hdr-gain-maps)
-   - [Ultra HDR JPEG file layout](#79-ultra-hdr-jpeg-file-layout)
-   - [Video export pipeline](#710-video-export-pipeline)
-   - [Frame-accurate looping](#711-frame-accurate-looping)
-   - [Preview playback sync](#712-preview-playback-sync)
-   - [Undo / redo history](#713-undo--redo-history)
-8. [Security model](#security-model)
-9. [HTTP API](#http-api)
-10. [Project layout](#project-layout)
-11. [How it was verified](#how-it-was-verified)
-12. [Known limits](#known-limits)
+<sub>The demo shows the real app working on openly licensed photos ([credits](assets/CREDITS.md)).</sub>
 
 ---
 
-## Run
+## The problem
+
+Here's what typically happens when iPhone photos go through a collage app or website:
+
+- **Your photos get uploaded** to someone else's server.
+- **HEIC is converted to JPEG**, which loses quality on every save.
+- **The extra color is clipped to sRGB**, the older, smaller color range, so the deepest reds, greens and oranges come out duller.
+- **The HDR layer is thrown away**, so highlights that glowed on your phone look flat.
+
+You get back a duller copy of your own photos.
+
+## The fix
+
+Tessera keeps the whole process on your Mac.
+
+- **HEIC stays HEIC.** Photos are decoded natively in Display P3 (via libheif), composited in P3, and re-encoded once. No JPEG round trip, so the "pop" survives.
+- **HDR is kept.** iPhone HDR gain maps carry through to Ultra HDR JPEG or Apple HDR HEIC export. Highlights glow on HDR screens. Standard viewers just see the normal SDR image.
+- **Zero uploads.** Photos never leave your machine. The server binds to `127.0.0.1` only.
+- **Mix anything.** HEIC, JPEG, PNG, TIFF, WebP, AVIF, plus MOV/MP4 — including iPhone HDR/HLG video.
+- **Videos play inside their tile.** A collage with clips exports as a video.
+- **Layouts for 1–10 tiles:** Auto layout (minimizes cropping), 106 templates, draggable dividers, freeform mode.
+- **Style controls:** Canvas format (1:1, 4:5, 9:16, 16:9, print sizes, A-series, custom), sharp/rounded/circle tiles, spacing and border sliders, padding color by picker, hex code, or swatch.
+
+---
+
+## Quick start
 
 ```sh
 ./start.sh
 ```
 
-This opens http://127.0.0.1:5173. The first run creates a Python venv and installs Flask, Pillow, pillow-heif, numpy and (on macOS) PyObjC Quartz. It needs Python 3 and `ffmpeg` (`brew install ffmpeg`); Xcode is not required. The server listens on `127.0.0.1` only and refuses requests from other websites (see [Security model](#security-model)).
+Opens `http://127.0.0.1:5173`. The first run creates a Python venv and installs Flask, Pillow, pillow-heif, numpy, and (on macOS) PyObjC Quartz. Needs Python 3 and `ffmpeg`:
 
-Exports are written to `exports/`, and imported media is kept in `workspace/`.
+```sh
+brew install ffmpeg
+```
+
+Xcode is not required. Exports go to `exports/`, imported media lives in `workspace/`.
+
+---
 
 ## Using it
 
@@ -83,6 +84,35 @@ Exports are written to `exports/`, and imported media is kept in `workspace/`.
 | MP4 H.264 | BT.709 | For Instagram, WhatsApp, web |
 | MOV HEVC 10-bit | Display P3 | Wide-color video for Apple devices |
 | MOV HEVC 10-bit HDR | HLG BT.2020 | HDR clips stay HDR and photo gain maps carry over. SDR content sits at 203 nits (BT.2408) |
+
+---
+
+## Contents (technical reference)
+
+1. [Architecture](#architecture)
+2. [Data model](#data-model)
+3. [Workflows (sequence diagrams)](#workflows)
+4. [Algorithms](#algorithms)
+   - [Layout tree and geometry](#71-layout-tree-and-geometry)
+   - [Template generation](#72-template-generation)
+   - [Auto layout](#73-auto-layout)
+   - [Placement: crop, pan, zoom](#74-placement-crop-pan-zoom)
+   - [Tile shapes and masks](#75-tile-shapes-and-masks)
+   - [Color management for photos](#76-color-management-for-photos)
+   - [Video color and HDR tone mapping (BT.2446 Method A)](#77-video-color-and-hdr-tone-mapping)
+   - [HDR gain maps](#78-hdr-gain-maps)
+   - [Ultra HDR JPEG file layout](#79-ultra-hdr-jpeg-file-layout)
+   - [Video export pipeline](#710-video-export-pipeline)
+   - [Frame-accurate looping](#711-frame-accurate-looping)
+   - [Preview playback sync](#712-preview-playback-sync)
+   - [Undo / redo history](#713-undo--redo-history)
+5. [Security model](#security-model)
+6. [HTTP API](#http-api)
+7. [Project layout](#project-layout)
+8. [How it was verified](#how-it-was-verified)
+9. [Known limits](#known-limits)
+10. [Contributing](#contributing)
+11. [License](#license)
 
 ---
 
@@ -968,21 +998,27 @@ Error codes:
 ## Project layout
 
 ```
-local-collage/
+Tessera/
 ├── start.sh              one-command launcher (venv + deps + server)
 ├── server.py             Flask app, endpoints, export job threads
 ├── requirements.txt
+├── requirements-dev.txt  test dependencies
 ├── collage/
 │   ├── media.py          ingest, ffprobe, previews, proxies, frame extraction
 │   ├── color.py          ICC transforms, LUT builders, BT.2446A, HLG math
 │   ├── gainmap.py        Apple gain map reader, Ultra HDR + Apple HDR writers
-│   └── render.py         placement, masks, still + video compositor
+│   ├── render.py         placement, masks, still + video compositor
+│   └── assets/
+│       └── DisplayP3.icc  CC0 Display P3 profile (saucecontrol/Compact-ICC-Profiles)
 ├── static/
 │   ├── index.html
 │   ├── app.css
 │   └── js/
 │       ├── app.js        editor UI, state, history, dialogs, transport
 │       └── layout.js     templates, auto layout, geometry (shared math)
+├── tests/                pytest suite (run in CI on macOS and Ubuntu)
+├── assets/               logo, demo video, poster and photo credits
+├── .github/              CI workflow, issue and PR templates
 ├── workspace/            imported media + cache (git-ignored)
 └── exports/              rendered output (git-ignored)
 ```
@@ -991,7 +1027,8 @@ local-collage/
 
 | Area | Check | Result |
 | --- | --- | --- |
-| Looping | Source frame *i* is solid gray 20+3i, keyframes every 30 frames, tile start at frame 27; decode all 120 export frames | 27…59, 27…59 — no mismatches |
+| Looping | Source frame *i* shows *i* in binary as 8 black/white stripes, keyframes every 30 frames, tile start at frame 0 and at frame 27; decode all 120 export frames (`tests/test_video.py`) | 27…59, 27…59 and 0…59, 0…59 — no mismatches |
+| Display P3 profile | sRGB → P3 and P3 → sRGB through the bundled CC0 profile vs macOS's own `Display P3.icc`, 17,496 colors | Max difference 1 code value (rounding) |
 | Gain map formula | ImageIO HDR decode of an Apple-format HEIC at gain 255 and 127 | 4.00× and 1.67×; the sRGB-linearized formula gives 4.00× and 1.64× (Rec.709 would give 1.77×) |
 | Ultra HDR JPEG | ImageIO aux data query | Recognized as an ISO gain map, GainMapMax 2 stops |
 | Apple HDR HEIC | ImageIO aux data query | Apple HDR gain map, headroom 4.0 |
@@ -1010,4 +1047,13 @@ local-collage/
 - HEIC gain maps were tested with Apple-format files made by macOS ImageIO, since there were no iPhone photos on the test machine. The maker-note fallback (for older iPhone files) has only been tested with synthetic data.
 - BT.2446 Method A puts HDR reference white at about 67% SDR signal, slightly darker than Apple's own SDR rendering of the same clip. That is how the standard behaves.
 - Editor previews of videos are SDR proxies. HDR shows only in exports (and in HDR photo previews on HDR screens).
-- Writing HDR HEIC needs macOS (ImageIO). Ultra HDR JPEG works everywhere.
+- Writing HDR HEIC needs macOS (ImageIO). Ultra HDR JPEG and every other format work without it.
+- macOS is the only platform tested by hand. The test suite also passes on Ubuntu in CI.
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup, tests and the few things that must stay in sync. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md), and report security problems privately as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE) © 2026 Aditya Seth

@@ -3,13 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Local Collage</title>
+  <title>Tessera</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='7' height='16' rx='2' fill='%23ff5a36'/%3E%3Crect x='9' width='7' height='7' rx='2' fill='%230a84ff'/%3E%3Crect x='9' y='9' width='7' height='7' rx='2' fill='%2334c759'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">Local Collage <span class="muted">· runs on this Mac</span></div>
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true"><rect width="7" height="16" rx="2" fill="#ff5a36"/><rect x="9" width="7" height="7" rx="2" fill="#0a84ff"/><rect x="9" y="9" width="7" height="7" rx="2" fill="#34c759"/></svg>
+      Tessera <span class="muted">· runs on this Mac</span>
+    </div>
     <div class="top-actions">
       <button id="btnUndo" class="ghost" title="Undo (⌘Z)">Undo</button>
       <button id="btnRedo" class="ghost" title="Redo (⇧⌘Z)">Redo</button>
