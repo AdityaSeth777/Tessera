@@ -37,11 +37,26 @@ def _register_video(mid, src_name, frames, *enc_args):
     return meta
 
 
-def _decode_grey(path):
+BITS = 8
+
+
+def _barcode(n):
+    """Frame i shows i in binary as 8 vertical stripes, so color conversion can't change which frame it reads as."""
+    w = SIZE // BITS
+    frames = np.zeros((n, SIZE, SIZE), np.uint8)
+    for i in range(n):
+        for b in range(BITS):
+            frames[i, :, b * w:(b + 1) * w] = 220 if (i >> b) & 1 else 30
+    return frames
+
+
+def _decode_barcode(path):
     raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-f", "rawvideo", "-pix_fmt", "gray", "-"],
                          capture_output=True, check=True).stdout
     frames = np.frombuffer(raw, np.uint8).reshape(-1, SIZE, SIZE)
-    return frames[:, 16:48, 16:48].mean(axis=(1, 2))
+    w = SIZE // BITS
+    bits = np.stack([frames[:, 8:56, b * w + 2:(b + 1) * w - 2].mean(axis=(1, 2)) > 125 for b in range(BITS)], 1)
+    return (bits * (1 << np.arange(BITS))).sum(1)
 
 
 def _full_tile(mid, start):
@@ -50,25 +65,22 @@ def _full_tile(mid, start):
 
 
 @needs_ffmpeg
-@pytest.mark.xfail(strict=False, reason="With ffmpeg 9.0.2 the clip pre-pass (_render_clip_segment) duplicates and "
-                                       "drops frames (27,27,28,29,30,32,32,...) even for start=0; the loop restart "
-                                       "point itself is correct. Passes or fails depending on the ffmpeg build.")
-def test_frame_accurate_loop_from_start(tmp_path):
-    """README check: frame i is grey 20+3i, keyframes every 30, start at frame 27 -> 27..59 repeating."""
-    _register_video("ramp", "ramp.mp4", _ramp(60),
+@pytest.mark.parametrize("start_frame", [0, 27])
+def test_frame_accurate_loop(tmp_path, start_frame):
+    """Keyframes every 30 frames; a tile starting at frame 27 must play 27..59 and loop back to 27 exactly."""
+    _register_video("code", "code.mp4", _barcode(60),
                     "-c:v", "libx264", "-g", "30", "-keyint_min", "30", "-sc_threshold", "0",
-                    "-pix_fmt", "yuv420p", "-crf", "1")
-    payload = {"canvas": {"aspect": [1, 1], "bg": "#000000"}, "tiles": [_full_tile("ramp", 27 / FPS)]}
+                    "-pix_fmt", "yuv420p", "-crf", "12")
+    payload = {"canvas": {"aspect": [1, 1], "bg": "#000000"}, "tiles": [_full_tile("code", start_frame / FPS)]}
     out = tmp_path / "loop.mp4"
     info = render.render_video(payload, "mp4-h264", SIZE,
                                {"durationMode": "custom", "customDuration": 4, "fps": FPS, "audio": False},
                                out, lambda p: None, tmp_path / "export.log")
     assert info["duration"] == 4
 
-    levels = _decode_grey(out)
-    assert len(levels) == 4 * FPS
-    got = np.rint((levels - 20) / 3).astype(int)
-    expected = 27 + np.arange(len(got)) % (60 - 27)
+    got = _decode_barcode(out)
+    assert len(got) == 4 * FPS
+    expected = start_frame + np.arange(len(got)) % (60 - start_frame)
     assert got.tolist() == expected.tolist()
     assert not any(p.name.startswith("collage_") for p in media.CACHE_DIR.iterdir())
 

@@ -1007,7 +1007,9 @@ Tessera/
 │   ├── media.py          ingest, ffprobe, previews, proxies, frame extraction
 │   ├── color.py          ICC transforms, LUT builders, BT.2446A, HLG math
 │   ├── gainmap.py        Apple gain map reader, Ultra HDR + Apple HDR writers
-│   └── render.py         placement, masks, still + video compositor
+│   ├── render.py         placement, masks, still + video compositor
+│   └── assets/
+│       └── DisplayP3.icc  CC0 Display P3 profile (saucecontrol/Compact-ICC-Profiles)
 ├── static/
 │   ├── index.html
 │   ├── app.css
@@ -1025,7 +1027,8 @@ Tessera/
 
 | Area | Check | Result |
 | --- | --- | --- |
-| Looping | Source frame *i* is solid gray 20+3i, keyframes every 30 frames, tile start at frame 27; decode all 120 export frames | 27…59, 27…59 — no mismatches |
+| Looping | Source frame *i* shows *i* in binary as 8 black/white stripes, keyframes every 30 frames, tile start at frame 0 and at frame 27; decode all 120 export frames (`tests/test_video.py`) | 27…59, 27…59 and 0…59, 0…59 — no mismatches |
+| Display P3 profile | sRGB → P3 and P3 → sRGB through the bundled CC0 profile vs macOS's own `Display P3.icc`, 17,496 colors | Max difference 1 code value (rounding) |
 | Gain map formula | ImageIO HDR decode of an Apple-format HEIC at gain 255 and 127 | 4.00× and 1.67×; the sRGB-linearized formula gives 4.00× and 1.64× (Rec.709 would give 1.77×) |
 | Ultra HDR JPEG | ImageIO aux data query | Recognized as an ISO gain map, GainMapMax 2 stops |
 | Apple HDR HEIC | ImageIO aux data query | Apple HDR gain map, headroom 4.0 |
@@ -1044,9 +1047,8 @@ Tessera/
 - HEIC gain maps were tested with Apple-format files made by macOS ImageIO, since there were no iPhone photos on the test machine. The maker-note fallback (for older iPhone files) has only been tested with synthetic data.
 - BT.2446 Method A puts HDR reference white at about 67% SDR signal, slightly darker than Apple's own SDR rendering of the same clip. That is how the standard behaves.
 - Editor previews of videos are SDR proxies. HDR shows only in exports (and in HDR photo previews on HDR screens).
-- Writing HDR HEIC needs macOS (ImageIO).
-- Tessera only runs on macOS for now. The Display P3 profile is loaded from a macOS system folder, so P3 previews and exports (including Ultra HDR JPEG) fail on other systems.
-- With ffmpeg 9.0.2, the clip pre-pass in video exports repeats and drops occasional frames (for example 27, 27, 28, 29, 30, 32, 32), even for clips that start at 0. Looping back to the start point is still correct. `tests/test_video.py` tracks this as an expected failure.
+- Writing HDR HEIC needs macOS (ImageIO). Ultra HDR JPEG and every other format work without it.
+- macOS is the only platform tested by hand. The test suite also passes on Ubuntu in CI.
 
 ## Contributing
 
