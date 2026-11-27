@@ -9,20 +9,15 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageCms
 
-P3_ICC_PATHS = [
-    Path(__file__).parent / "assets" / "DisplayP3.icc",
-    Path("/System/Library/ColorSync/Profiles/Display P3.icc"),
-]
+# CC0 profile from saucecontrol/Compact-ICC-Profiles; matches macOS's Display P3.icc to within 1 code value.
+P3_ICC_PATH = Path(__file__).parent / "assets" / "DisplayP3.icc"
 
 TARGETS = ("p3", "srgb")
 
 
 @lru_cache(maxsize=1)
 def p3_icc_bytes() -> bytes:
-    for p in P3_ICC_PATHS:
-        if p.exists():
-            return p.read_bytes()
-    raise RuntimeError("Display P3 ICC profile not found (expected macOS ColorSync profile).")
+    return P3_ICC_PATH.read_bytes()
 
 
 @lru_cache(maxsize=1)

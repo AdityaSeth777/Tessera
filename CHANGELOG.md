@@ -12,6 +12,9 @@ All notable changes to Tessera are listed here. The format follows [Keep a Chang
 ### Changed
 - Renamed the project from local-collage to **Tessera**.
 
+### Fixed
+- Display P3 previews and exports failed on anything but macOS, because the P3 profile was read from a macOS system folder. Tessera now ships a public-domain (CC0) Display P3 profile that matches Apple's to within 1 code value.
+
 ## [0.1.0] - 2026-11-02
 
 First working version.

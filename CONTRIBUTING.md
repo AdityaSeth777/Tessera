@@ -19,7 +19,7 @@ cd Tessera
 ./start.sh                 # creates .venv, installs requirements, serves http://127.0.0.1:5173
 ```
 
-macOS is the only supported platform for now. CI also runs the tests on Ubuntu, but Display P3 currently fails there because the P3 color profile is loaded from a macOS system folder (that test is marked as an expected failure). Bundling the profile would fix it.
+macOS is the only platform tested by hand. Only the Apple HDR HEIC export needs macOS (ImageIO). CI also runs the tests on Ubuntu, so please keep the Python code free of other macOS-only dependencies.
 
 ## Running the tests
 

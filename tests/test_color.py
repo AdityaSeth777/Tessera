@@ -1,5 +1,8 @@
+import io
+
 import numpy as np
 import pytest
+from PIL import Image, ImageCms
 
 from collage import color
 from conftest import IS_MACOS
@@ -98,8 +101,17 @@ def test_hex_to_srgb_is_identity():
     assert color.hex_to_target("#fff", "srgb") == (255, 255, 255)
 
 
-@pytest.mark.xfail(not IS_MACOS, strict=True,
-                   reason="Display P3 ICC only loads from macOS ColorSync; collage/assets/DisplayP3.icc is missing, "
-                          "so every P3 preview/export fails off macOS")
 def test_display_p3_profile_available():
     assert color.p3_icc_bytes()[36:40] == b"acsp"
+
+
+@pytest.mark.skipif(not IS_MACOS, reason="compares against the macOS system profile")
+def test_bundled_p3_matches_macos_profile():
+    apple = ImageCms.ImageCmsProfile("/System/Library/ColorSync/Profiles/Display P3.icc")
+    bundled = ImageCms.ImageCmsProfile(io.BytesIO(color.p3_icc_bytes()))
+    srgb = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB"))
+    v = np.linspace(0, 255, 12).astype(np.uint8)
+    img = Image.fromarray(np.stack(np.meshgrid(v, v, v, indexing="ij"), -1).reshape(-1, 1, 3), "RGB")
+    a, b = (np.asarray(ImageCms.applyTransform(img, ImageCms.buildTransform(srgb, p, "RGB", "RGB")), np.int16)
+            for p in (apple, bundled))
+    assert np.abs(a - b).max() <= 1
