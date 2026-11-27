@@ -1,26 +1,34 @@
-# local-collage
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-wordmark-light.png">
+    <img alt="Tessera" src="assets/logo-wordmark-dark.png" width="360">
+  </picture>
+</p>
 
-**Your iPhone took a better photo than any collage app let you share.**
+**Make photo collages on your Mac without losing the color and HDR your iPhone captured.**
 
-<video src="docs/demo.mp4" poster="docs/demo-poster.jpg" controls width="100%"></video>
+An iPhone photo holds more than an ordinary picture. It has colors richer than a standard screen can show (called *Display P3*), plus a hidden brightness layer that makes skies, lamps and reflections glow on HDR screens. Most collage apps and websites flatten all of that into a plain JPEG, often on a server you've never heard of. Tessera builds the collage on your own Mac and keeps both.
+
+[![Watch the Tessera demo](assets/demo-poster.jpg)](assets/demo.mp4)
+
+<sub>The demo shows the real app working on openly licensed photos ([credits](assets/CREDITS.md)).</sub>
 
 ---
 
 ## The problem
 
-When you drop iPhone photos into an online collage tool:
+Here's what typically happens when iPhone photos go through a collage app or website:
 
-- Your files **upload to a stranger's server** you don't control
-- HEIC is quietly converted to JPEG — a **lossy, sRGB round trip**
-- **Display P3 wide color is clipped** — the vivid colors iPhone captured are gone
-- **HDR gain maps are discarded** — highlights become flat
-- You get back a duller, smaller-gamut copy of your own photos
+- **Your photos get uploaded** to someone else's server.
+- **HEIC is converted to JPEG**, which loses quality on every save.
+- **The extra color is clipped to sRGB**, the older, smaller color range, so the deepest reds, greens and oranges come out duller.
+- **The HDR layer is thrown away**, so highlights that glowed on your phone look flat.
 
-You took a great photo. The collage tool made it worse before you even started.
+You get back a duller copy of your own photos.
 
 ## The fix
 
-local-collage keeps the entire pipeline on your Mac.
+Tessera keeps the whole process on your Mac.
 
 - **HEIC stays HEIC.** Photos are decoded natively in Display P3 (via libheif), composited in P3, and re-encoded once. No JPEG round trip, so the "pop" survives.
 - **HDR is kept.** iPhone HDR gain maps carry through to Ultra HDR JPEG or Apple HDR HEIC export. Highlights glow on HDR screens. Standard viewers just see the normal SDR image.
@@ -103,6 +111,8 @@ Xcode is not required. Exports go to `exports/`, imported media lives in `worksp
 7. [Project layout](#project-layout)
 8. [How it was verified](#how-it-was-verified)
 9. [Known limits](#known-limits)
+10. [Contributing](#contributing)
+11. [License](#license)
 
 ---
 
@@ -988,10 +998,11 @@ Error codes:
 ## Project layout
 
 ```
-local-collage/
+Tessera/
 ├── start.sh              one-command launcher (venv + deps + server)
 ├── server.py             Flask app, endpoints, export job threads
 ├── requirements.txt
+├── requirements-dev.txt  test dependencies
 ├── collage/
 │   ├── media.py          ingest, ffprobe, previews, proxies, frame extraction
 │   ├── color.py          ICC transforms, LUT builders, BT.2446A, HLG math
@@ -1003,8 +1014,9 @@ local-collage/
 │   └── js/
 │       ├── app.js        editor UI, state, history, dialogs, transport
 │       └── layout.js     templates, auto layout, geometry (shared math)
-├── docs/
-│   └── demo.mp4          launch video
+├── tests/                pytest suite (run in CI on macOS and Ubuntu)
+├── assets/               logo, demo video, poster and photo credits
+├── .github/              CI workflow, issue and PR templates
 ├── workspace/            imported media + cache (git-ignored)
 └── exports/              rendered output (git-ignored)
 ```
@@ -1032,4 +1044,14 @@ local-collage/
 - HEIC gain maps were tested with Apple-format files made by macOS ImageIO, since there were no iPhone photos on the test machine. The maker-note fallback (for older iPhone files) has only been tested with synthetic data.
 - BT.2446 Method A puts HDR reference white at about 67% SDR signal, slightly darker than Apple's own SDR rendering of the same clip. That is how the standard behaves.
 - Editor previews of videos are SDR proxies. HDR shows only in exports (and in HDR photo previews on HDR screens).
-- Writing HDR HEIC needs macOS (ImageIO). Ultra HDR JPEG works everywhere.
+- Writing HDR HEIC needs macOS (ImageIO).
+- Tessera only runs on macOS for now. The Display P3 profile is loaded from a macOS system folder, so P3 previews and exports (including Ultra HDR JPEG) fail on other systems.
+- With ffmpeg 9.0.2, the clip pre-pass in video exports repeats and drops occasional frames (for example 27, 27, 28, 29, 30, 32, 32), even for clips that start at 0. Looping back to the start point is still correct. `tests/test_video.py` tracks this as an expected failure.
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup, tests and the few things that must stay in sync. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md), and report security problems privately as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE) © 2026 Aditya Seth
