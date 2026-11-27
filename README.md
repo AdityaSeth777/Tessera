@@ -1,59 +1,52 @@
 # local-collage
 
-A collage maker that runs entirely on your Mac. Photos and videos never leave the machine.
+**Your iPhone took a better photo than any collage app let you share.**
 
-- **HEIC stays HEIC.** iPhone photos are decoded directly with libheif in their **Display P3** wide color, composited in P3, and encoded once at export. There is no JPEG round trip, so the "pop" survives.
-- **HDR is kept.** iPhone HDR gain maps are carried into **Ultra HDR JPEG** or **Apple HDR HEIC** exports, and HDR video can be exported as **HEVC HLG**.
-- **Mix anything:** HEIC, JPEG, PNG, TIFF, WebP, AVIF, plus MOV/MP4 (including iPhone HDR/HLG video).
-- **Videos play inside their tile.** A collage with clips exports as a video. Clips loop frame-accurately from their chosen start point.
-- **Layouts for 1–10 tiles:**
-  - **Auto layout** picks the arrangement that crops your photos least.
-  - A **template gallery** (up to 106 layouts for 10 tiles).
-  - **Draggable dividers** between tiles.
-  - A **freeform** mode: move, resize, rotate, overlap.
-- **Style:** any canvas format (1:1, 4:5, 9:16, 1.91:1, 16:9, print sizes, A-series, custom), **sharp / rounded / circle** tiles, spacing and border sliders, and a padding color chosen by picker, hex code or swatch.
+<video src="docs/demo.mp4" poster="docs/demo-poster.jpg" controls width="100%"></video>
 
 ---
 
-## Contents
+## The problem
 
-1. [Run](#run)
-2. [Using it](#using-it)
-3. [Export formats](#export-formats)
-4. [Architecture](#architecture)
-5. [Data model](#data-model)
-6. [Workflows (sequence diagrams)](#workflows)
-7. [Algorithms](#algorithms)
-   - [Layout tree and geometry](#71-layout-tree-and-geometry)
-   - [Template generation](#72-template-generation)
-   - [Auto layout](#73-auto-layout)
-   - [Placement: crop, pan, zoom](#74-placement-crop-pan-zoom)
-   - [Tile shapes and masks](#75-tile-shapes-and-masks)
-   - [Color management for photos](#76-color-management-for-photos)
-   - [Video color and HDR tone mapping (BT.2446 Method A)](#77-video-color-and-hdr-tone-mapping)
-   - [HDR gain maps](#78-hdr-gain-maps)
-   - [Ultra HDR JPEG file layout](#79-ultra-hdr-jpeg-file-layout)
-   - [Video export pipeline](#710-video-export-pipeline)
-   - [Frame-accurate looping](#711-frame-accurate-looping)
-   - [Preview playback sync](#712-preview-playback-sync)
-   - [Undo / redo history](#713-undo--redo-history)
-8. [Security model](#security-model)
-9. [HTTP API](#http-api)
-10. [Project layout](#project-layout)
-11. [How it was verified](#how-it-was-verified)
-12. [Known limits](#known-limits)
+When you drop iPhone photos into an online collage tool:
+
+- Your files **upload to a stranger's server** you don't control
+- HEIC is quietly converted to JPEG — a **lossy, sRGB round trip**
+- **Display P3 wide color is clipped** — the vivid colors iPhone captured are gone
+- **HDR gain maps are discarded** — highlights become flat
+- You get back a duller, smaller-gamut copy of your own photos
+
+You took a great photo. The collage tool made it worse before you even started.
+
+## The fix
+
+local-collage keeps the entire pipeline on your Mac.
+
+- **HEIC stays HEIC.** Photos are decoded natively in Display P3 (via libheif), composited in P3, and re-encoded once. No JPEG round trip, so the "pop" survives.
+- **HDR is kept.** iPhone HDR gain maps carry through to Ultra HDR JPEG or Apple HDR HEIC export. Highlights glow on HDR screens. Standard viewers just see the normal SDR image.
+- **Zero uploads.** Photos never leave your machine. The server binds to `127.0.0.1` only.
+- **Mix anything.** HEIC, JPEG, PNG, TIFF, WebP, AVIF, plus MOV/MP4 — including iPhone HDR/HLG video.
+- **Videos play inside their tile.** A collage with clips exports as a video.
+- **Layouts for 1–10 tiles:** Auto layout (minimizes cropping), 106 templates, draggable dividers, freeform mode.
+- **Style controls:** Canvas format (1:1, 4:5, 9:16, 16:9, print sizes, A-series, custom), sharp/rounded/circle tiles, spacing and border sliders, padding color by picker, hex code, or swatch.
 
 ---
 
-## Run
+## Quick start
 
 ```sh
 ./start.sh
 ```
 
-This opens http://127.0.0.1:5173. The first run creates a Python venv and installs Flask, Pillow, pillow-heif, numpy and (on macOS) PyObjC Quartz. It needs Python 3 and `ffmpeg` (`brew install ffmpeg`); Xcode is not required. The server listens on `127.0.0.1` only and refuses requests from other websites (see [Security model](#security-model)).
+Opens `http://127.0.0.1:5173`. The first run creates a Python venv and installs Flask, Pillow, pillow-heif, numpy, and (on macOS) PyObjC Quartz. Needs Python 3 and `ffmpeg`:
 
-Exports are written to `exports/`, and imported media is kept in `workspace/`.
+```sh
+brew install ffmpeg
+```
+
+Xcode is not required. Exports go to `exports/`, imported media lives in `workspace/`.
+
+---
 
 ## Using it
 
@@ -83,6 +76,33 @@ Exports are written to `exports/`, and imported media is kept in `workspace/`.
 | MP4 H.264 | BT.709 | For Instagram, WhatsApp, web |
 | MOV HEVC 10-bit | Display P3 | Wide-color video for Apple devices |
 | MOV HEVC 10-bit HDR | HLG BT.2020 | HDR clips stay HDR and photo gain maps carry over. SDR content sits at 203 nits (BT.2408) |
+
+---
+
+## Contents (technical reference)
+
+1. [Architecture](#architecture)
+2. [Data model](#data-model)
+3. [Workflows (sequence diagrams)](#workflows)
+4. [Algorithms](#algorithms)
+   - [Layout tree and geometry](#71-layout-tree-and-geometry)
+   - [Template generation](#72-template-generation)
+   - [Auto layout](#73-auto-layout)
+   - [Placement: crop, pan, zoom](#74-placement-crop-pan-zoom)
+   - [Tile shapes and masks](#75-tile-shapes-and-masks)
+   - [Color management for photos](#76-color-management-for-photos)
+   - [Video color and HDR tone mapping (BT.2446 Method A)](#77-video-color-and-hdr-tone-mapping)
+   - [HDR gain maps](#78-hdr-gain-maps)
+   - [Ultra HDR JPEG file layout](#79-ultra-hdr-jpeg-file-layout)
+   - [Video export pipeline](#710-video-export-pipeline)
+   - [Frame-accurate looping](#711-frame-accurate-looping)
+   - [Preview playback sync](#712-preview-playback-sync)
+   - [Undo / redo history](#713-undo--redo-history)
+5. [Security model](#security-model)
+6. [HTTP API](#http-api)
+7. [Project layout](#project-layout)
+8. [How it was verified](#how-it-was-verified)
+9. [Known limits](#known-limits)
 
 ---
 
@@ -983,6 +1003,8 @@ local-collage/
 │   └── js/
 │       ├── app.js        editor UI, state, history, dialogs, transport
 │       └── layout.js     templates, auto layout, geometry (shared math)
+├── docs/
+│   └── demo.mp4          launch video
 ├── workspace/            imported media + cache (git-ignored)
 └── exports/              rendered output (git-ignored)
 ```
