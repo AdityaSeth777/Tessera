@@ -7,11 +7,11 @@
 
 **Make photo collages on your Mac without losing the color and HDR your iPhone captured.**
 
-An iPhone photo holds more than an ordinary picture. It has colors richer than a standard screen can show (called *Display P3*), plus a hidden brightness layer that makes skies, lamps and reflections glow on HDR screens. Most collage apps and websites flatten all of that into a plain JPEG, often on a server you've never heard of. Tessera builds the collage on your own Mac and keeps both.
+An iPhone photo holds more than an ordinary picture. It has colors richer than a standard screen can show (called *Display P3*), plus a hidden brightness layer that makes skies, lamps and reflections glow on HDR screens. Many collage apps and websites flatten all of that into a plain JPEG, often on a server you've never heard of. Tessera builds the collage on your own Mac and keeps both.
 
-[![Watch the Tessera demo](assets/demo-poster.jpg)](assets/demo.mp4)
+[![Silent preview of the Tessera demo. Click for the full video.](assets/demo-preview.webp)](assets/demo.mp4)
 
-<sub>The demo shows the real app working on openly licensed photos ([credits](assets/CREDITS.md)).</sub>
+<sub>Silent preview. **[Watch the full 54-second demo with sound](assets/demo.mp4)**. It shows the real app working on openly licensed photos ([credits](assets/CREDITS.md)).</sub>
 
 ---
 
@@ -1017,7 +1017,7 @@ Tessera/
 │       ├── app.js        editor UI, state, history, dialogs, transport
 │       └── layout.js     templates, auto layout, geometry (shared math)
 ├── tests/                pytest suite (run in CI on macOS and Ubuntu)
-├── assets/               logo, demo video, poster and photo credits
+├── assets/               logo, demo video, animated preview, poster, photo credits
 ├── .github/              CI workflow, issue and PR templates
 ├── workspace/            imported media + cache (git-ignored)
 └── exports/              rendered output (git-ignored)
